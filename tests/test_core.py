@@ -224,3 +224,14 @@ def test_device_artifact_joins_normalized_htp_operation_id(local):
     assert core.profile_evidence(pid, "0xFFFF")["artifacts"] == []
     with pytest.raises(ValueError, match="Expected QAIRT"):
         core.import_evidence(pid, "qhas-v1.0.json", "htp-graph-v1.0")
+
+
+def test_comparison_explains_mismatched_run_conditions(local):
+    core, model_id = local
+    baseline = core.run_ort_profile(model_id, "test.npz", warmup=1, repeats=2, trace_runs=1)
+    candidate = core.run_ort_profile(model_id, "test.npz", warmup=1, repeats=3, trace_runs=1)
+    compared = core.compare_experiments(baseline["id"], candidate["id"])
+    assert compared["latency"]["comparison_issues"] == [{"field": "repeats", "problem": "different"}]
+    assert compared["latency"]["p50"]["delta_pct"] is None
+    assert compared["numeric"]["passed"]
+    assert "repeats · different" in core.report(compared["id"])

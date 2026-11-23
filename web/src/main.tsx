@@ -269,9 +269,13 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
 }
 
 function CsvProfile({profile, query, go}: {profile: Profile; query: Query; go: (q: Partial<Query>) => void}) {
-  const [kind, setKind] = useState('inference');
-  const visible = profile.events.filter(row => row.kind === kind);
-  const selected = profile.events.find(row => row.id === query.event) ?? visible[0];
+  const hasInference = profile.events.some(row => row.kind === 'inference');
+  const hasCycles = profile.events.some(row => row.kind === 'node');
+  const [kind, setKind] = useState(hasInference ? 'inference' : 'node');
+  const requested = profile.events.find(row => row.id === query.event);
+  const recordKind = requested?.kind ?? kind;
+  const visible = profile.events.filter(row => row.kind === recordKind);
+  const selected = requested ?? visible[0];
   const raw = useData<{raw: unknown}>(selected ? '/profiles/' + profile.id + '/events/' + selected.id : undefined);
   const nodeIds = profile.mappings.filter(map => selected?.operation && map.operation_ids.includes(selected.operation))
     .flatMap(map => map.node_ids);
@@ -284,9 +288,9 @@ function CsvProfile({profile, query, go}: {profile: Profile; query: Query; go: (
     </div>
     <div className="timeline-layout">
       <Panel title="QAIRT Profile Records" icon={<Activity size={16}/>} actions={<div className="inline">
-        <select aria-label="Record type" value={kind} onChange={e => {setKind(e.target.value); go({event:undefined});}}>
-          <option value="inference">NetRun graph executions</option>
-          {profile.events.some(row => row.kind === 'node') && <option value="node">HTP operation cycles</option>}
+        <select aria-label="Record type" value={recordKind} onChange={e => {setKind(e.target.value); go({event:undefined});}}>
+          {hasInference && <option value="inference">NetRun graph executions</option>}
+          {hasCycles && <option value="node">HTP operation cycles</option>}
         </select>
         <a className="action" href={profile.raw_trace}><ArrowDownToLine size={14}/> Raw CSV</a></div>}>
         <div className="timeline-body">
@@ -325,7 +329,9 @@ function Comparison({exp}: {exp: Experiment}) {
       </dl>
       <p className="quiet">{exp.sources.baseline.filter(Boolean).join(' · ')} → {exp.sources.candidate.filter(Boolean).join(' · ')}</p>
       {exp.numeric?.error && <p className="error">{exp.numeric.error}</p>}
-      {!exp.latency.comparable && <p className="quiet">Matched latency change unavailable for these conditions.</p>}
+      {!exp.latency.comparable && <div className="quiet"><p>Matched latency change unavailable.</p>
+        {!!exp.latency.comparison_issues?.length && <ul>{exp.latency.comparison_issues.map(issue =>
+          <li key={issue.field}>{issue.field.replaceAll('_', ' ')} · {issue.problem}</li>)}</ul>}</div>}
       <details><summary>Module trace differences ({exp.trace_runs.baseline ?? '—'} / {exp.trace_runs.candidate ?? '—'} runs)</summary>
         <table><thead><tr><th>Module</th><th>Baseline</th><th>Candidate</th></tr></thead><tbody>{exp.module_costs.map(row =>
           <tr key={row.module}><td>{label(row.module)}</td><td>{row.baseline_cycles == null ? us(row.baseline_us) : measure(row.baseline_cycles, 'cycles')}</td>

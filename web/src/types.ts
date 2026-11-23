@@ -21,7 +21,7 @@ export interface Explanation extends Hotspot { example_evidence: Evidence; raw_t
 interface Metric { baseline: number | null; candidate: number | null; delta_pct: number | null }
 export interface Experiment {
   id: string; baseline: string; candidate: string; hypothesis: string | null;
-  latency: {p50: Metric; p95: Metric; comparable: boolean; unit: string; label?: string};
+  latency: {p50: Metric; p95: Metric; comparable: boolean; unit: string; label?: string; comparison_issues?: {field: string; problem: string}[]};
   numeric: {passed: boolean; atol: number; rtol: number; error?: string; outputs?: Record<string, {max_abs: number | null; mean_abs: number | null}>} | null;
   graph_diff: {baseline_nodes: number; candidate_nodes: number; edges_added?: unknown[]; edges_removed?: unknown[]; operator_changes: {module: string; domain: string; op: string; baseline: number; candidate: number}[]};
   module_costs: {module: string; baseline_us: number | null; candidate_us: number | null; baseline_cycles?: number | null; candidate_cycles?: number | null}[];

@@ -291,15 +291,29 @@ class Core:
             raise ValueError("Comparison tolerances must be finite and nonnegative")
         left, right = self.session(baseline), self.session(candidate)
         left_graph, right_graph = self.graph(left.model_id), self.graph(right.model_id)
+        reasons = []
+        def check(field, before, after, required=False):
+            if required and (before is None or after is None or before == {} or after == {}):
+                reasons.append({"field": field, "problem": "unavailable"})
+            elif before != after:
+                reasons.append({"field": field, "problem": "different"})
+
+        check("latency_scope", (left.latency_us or {}).get("scope"), (right.latency_us or {}).get("scope"), required=True)
+        check("source", left.source, right.source)
+        check("backend", left.backend, right.backend, required=True)
+        check("device", left.device, right.device, required=True)
+        check("profiler_version", left.profiler_version, right.profiler_version, required=True)
+        check("fixture_provenance", left.provenance == "fixture", right.provenance == "fixture")
         keys = ("input_sha256", "warmup", "repeats", "trace_runs", "intra_op_threads", "inter_op_threads",
-                "execution_mode", "graph_optimization", "profiling_level", "perf_profile", "precision", "capture_protocol")
-        matched = bool(left.latency_us and right.latency_us and left.source == right.source
-                       and left.backend == right.backend and left.device == right.device
-                       and left.profiler_version == right.profiler_version
-                       and left.latency_us.get("scope") == right.latency_us.get("scope")
-                       and left.conditions.get("input_sha256")
-                       and all(left.conditions.get(k) == right.conditions.get(k) for k in keys))
+                "execution_mode", "graph_optimization", "profiling_level", "perf_profile", "precision",
+                "capture_protocol", "native_io", "model_format", "runs")
+        for key in keys:
+            check(key, left.conditions.get(key), right.conditions.get(key), required=key == "input_sha256")
+
+        matched = not reasons
         latency = {"comparable": matched, "unit": "us"}
+        if reasons:
+            latency["comparison_issues"] = reasons
         if matched and left.latency_us.get("label"):
             latency["label"] = left.latency_us["label"]
         for key in ("p50", "p95"):
@@ -367,6 +381,11 @@ class Core:
             row = exp["latency"][metric]
             change = f"{row['delta_pct']:+.2f}%" if row["delta_pct"] is not None else "Unavailable"
             lines.append(f"| {metric} | {display(row['baseline'])} | {display(row['candidate'])} | {change} |")
+        if exp["latency"].get("comparison_issues"):
+            issues = exp["latency"]["comparison_issues"]
+            lines.extend(["", "Latency comparison unavailable."] + [
+                f"- {issue['field']} · {issue['problem']}" for issue in issues
+            ])
         lines.extend(["", "## Numerical validation", "", "```json", json.dumps(exp["numeric"], indent=2), "```",
                       "", "## Trace evidence", "",
                       "| Semantic module | Baseline operation sum | Candidate operation sum |",

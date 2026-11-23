@@ -79,7 +79,7 @@ try {
     await page.getByText('AIMET', {exact:true}).waitFor();
     checked.push({check:'Tiny Transformer AIMET Encodings', model:aimet.id});
   }
-  const htp = catalog.profiles.find(profile => profile.source === 'QNN' && profile.unit === 'cycles');
+  const htp = catalog.profiles.find(profile => profile.conditions.adapter === 'qnn-linting-chrome-v2.50');
   if (htp) {
     const ranking = await (await page.request.get(base + '/api/profiles/' + htp.id + '/hotspots?level=node')).json();
     const top = ranking.hotspots[0];
@@ -104,6 +104,41 @@ try {
     await page.screenshot({path:resolve(screenshots,'android-htp-timeline.png'), fullPage:true});
     checked.push({check:'Android QNN HTP linting cycles and hardware resources', profile:htp.id, event});
   }
+  const capture = catalog.profiles.find(profile => profile.raw_format === 'csv' && profile.latency_us);
+  if (capture) {
+    await page.goto(base + '/?' + new URLSearchParams({view:'timeline',profile:capture.id}));
+    await page.getByText('QAIRT Profile Records', {exact:true}).waitFor();
+    await page.getByText('Message timestamp', {exact:true}).waitFor();
+    await page.getByRole('link', {name:'Raw CSV'}).waitFor();
+    const data = await (await page.request.get(base + '/api/profiles/' + capture.id)).json();
+    const sample = data.events.find(event => event.kind === 'inference');
+    assert.equal(sample.start, null);
+    const response = await page.request.get(base + '/api/profiles/' + capture.id + '/events/' + sample.id);
+    assert.equal((await response.json()).raw[1], 'EXECUTE');
+    await page.screenshot({path:resolve(screenshots,'qnn-csv-records.png'), fullPage:true});
+    checked.push({check:'QAIRT CSV graph timings and original records', profile:capture.id});
+  }
+  const detailed = catalog.profiles.find(profile => profile.conditions.adapter === 'qnn-viewer-csv-v2.50' && profile.conditions.profiling_level === 'detailed');
+  if (detailed) {
+    const profile = await (await page.request.get(base + '/api/profiles/' + detailed.id)).json();
+    const cycle = profile.events.find(event => event.kind === 'node');
+    assert.equal(cycle.unit, 'cycles');
+    await page.goto(base + '/?' + new URLSearchParams({view:'timeline',profile:detailed.id,event:cycle.id}));
+    await page.locator('.event-list tr.current').getByRole('button', {name:cycle.name, exact:true}).waitFor();
+    assert.equal(await page.getByRole('combobox', {name:'Record type'}).inputValue(), 'node');
+    checked.push({check:'QAIRT Detailed operation deep link', profile:detailed.id, event:cycle.id});
+  }
+  const captureComparison = resolve(screenshots, 'android-runner-comparison.json');
+  if (existsSync(captureComparison)) {
+    const {unmatched} = JSON.parse(readFileSync(captureComparison, 'utf8'));
+    const response = await page.request.get(base + '/api/experiments/' + unmatched.id);
+    assert.ok(response.ok());
+    assert.equal((await response.json()).latency.comparable, false);
+    await page.goto(base + '/?' + new URLSearchParams({view:'diagnosis',profile:unmatched.baseline,experiment:unmatched.id}));
+    await page.getByText('Matched latency change unavailable.', {exact:true}).waitFor();
+    await page.getByText('profiling level · different', {exact:true}).waitFor();
+    checked.push({check:'Comparison explains mismatched profiling conditions', experiment:unmatched.id});
+  }
   const tinySummary = resolve(data, 'android-tiny/summary.json');
   if (existsSync(tinySummary)) {
     const tiny = JSON.parse(readFileSync(tinySummary, 'utf8'));
@@ -123,6 +158,15 @@ try {
     const proof = page.getByText('Compiler mapping evidence', {exact:true});
     await proof.waitFor();
     await page.getByText('Source ONNX', {exact:true}).waitFor();
+    const trace = await (await page.request.get(base + '/api/profiles/' + tinyProfile)).json();
+    if (trace.evidence?.length) {
+      await page.getByRole('link', {name:'HTP Graph JSON'}).first().waitFor();
+      await page.getByRole('link', {name:'QHAS JSON'}).first().waitFor();
+      const event = await page.locator('.track-bars button.active').getAttribute('data-event');
+      const evidence = await (await page.request.get(base + '/api/profiles/' + tinyProfile + '/events/' + event)).json();
+      assert.ok(evidence.related_evidence.length);
+      checked.push({check:'QHAS and HTP Graph attached to measured operation', profile:tinyProfile, event});
+    }
     const returnToGraph = page.getByRole('button', {name:/Locate n[0-9]+ in graph/}).first();
     const node = (await returnToGraph.textContent()).match(/Locate (n\d+) /)[1];
     await page.screenshot({path:resolve(screenshots,'tiny-htp-mapping.png'), fullPage:true});

@@ -1,6 +1,6 @@
 # HTP Insight
 
-本机 ONNX 与 Qualcomm HTP 性能诊断工作台。当前 macOS MVP 使用 ONNX Runtime CPU 生成实测证据，并通过 React Web、CLI 和 Claude Code MCP 读取同一份数据。
+本机 ONNX 与 Qualcomm HTP 性能诊断工作台。支持 macOS ONNX Runtime CPU 和连接 ADB 的 Android QAIRT HTP 实测。React Web、CLI 和 Claude Code MCP 使用同一套证据。
 
 ## 本机运行
 
@@ -45,7 +45,7 @@ runs/aimet-env/bin/python -m scripts.aimet_encodings
 .venv/bin/python -m htp_insight run_ort_profile '{"model_id":"<model-id>","inputs":"input.npz"}'
 ```
 
-HTP Context Binary 可通过 `import_model` 登记，接受 `target_device` 和 `compatibility`。HTP 原生执行及专有文件解析属于 Future Integration。
+HTP Context Binary 可通过 `import_model` 登记，接受 `target_device` 和 `compatibility`。真机运行使用 QAIRT，专有日志通过同版本的官方 viewer 转换。
 
 Android 设备上的 Basic、Detailed、Linting 与 Optrace 采集可使用 [QAIRT Android 运行器](docs/android-runner.md)。
 

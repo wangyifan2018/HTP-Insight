@@ -41,3 +41,5 @@
 QAIRT 2.50 的 `qnn-viewer-csv-v2.50` 接受 `qnn-profile-viewer` 输出的 Basic / Detailed CSV。单图执行可计算 NetRun p50/p95，导入时可用 `conditions.warmup` 指定丢弃的前置次数。Detailed 算子以 cycles 排名，CSV 消息时间戳保持原始语义。使用 `profile_event` 获取规范化事件及原始行。
 
 用 `import_evidence` 将真实 `qhas-v1.0` 或 `htp-graph-v1.0` JSON 附加到对应 Optrace Profile。随后 `profile_evidence` 可按 Profile ID 列出所有附件，或传入 HTP `operation_id` 定位拓扑和 QHAS 操作记录。`profile_event` 和 `explain_hotspot` 也返回能按 ID 关联的证据，含原文件的下载地址与 SHA-256。
+
+`compare_experiments` 在采集条件缺失或不一致时返回 `latency.comparison_issues`。每项包含条件 `field` 和问题 `problem`，相对延迟变化为 `null`。有实测分位数时仍返回各侧原值。

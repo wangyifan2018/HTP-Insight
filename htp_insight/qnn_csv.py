@@ -81,5 +81,4 @@ class QnnViewerCsvAdapter:
                 "samples": samples, "scope": "qnn-profile-viewer CSV EXECUTE/NETRUN/ROOT, single graph",
                 "label": "NetRun graph execute (QAIRT CSV)",
             }
-            session.conditions.setdefault("warmup", discard)
-            session.conditions.setdefault("repeats", len(samples))
+            session.conditions.update(warmup=discard, repeats=len(samples))
