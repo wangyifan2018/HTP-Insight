@@ -1,0 +1,334 @@
+import hashlib
+import json
+import math
+import os
+import platform
+import re
+import tempfile
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlencode
+
+import numpy as np
+
+from . import analysis, graph, profiles, qnn
+from .schema import ExperimentResult, Graph, ModelArtifact, NodeMapping, ProfileSession
+
+ROOT = Path(__file__).resolve().parents[1]
+ID_PATTERN = re.compile(r"(?:model|profile|experiment)-[a-f0-9]{24}")
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def encode(value):
+    return json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False).encode()
+
+
+def atomic_write(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            handle.write(data)
+            handle.close()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+class Core:
+    def __init__(self, root=None):
+        self.root = Path(root or os.getenv("HTP_INSIGHT_DATA", ROOT / "runs")).resolve()
+        self.inbox = self.root / "inbox"
+        self.inbox.mkdir(parents=True, exist_ok=True)
+        self.web_url = os.getenv("HTP_INSIGHT_WEB", "http://127.0.0.1:8000").rstrip("/")
+
+    def link(self, page, **query):
+        return f"{self.web_url}/?{urlencode({'view': page, **query})}"
+
+    def inbox_path(self, name, extensions):
+        path = (self.inbox / name).resolve()
+        if not path.is_relative_to(self.inbox) or path.suffix.lower() not in extensions or not path.is_file():
+            raise ValueError(f"Expected existing {'/'.join(sorted(extensions))} file under the inbox")
+        return path
+
+    def item(self, identifier, filename):
+        if not ID_PATTERN.fullmatch(identifier):
+            raise ValueError("Invalid evidence identifier")
+        return self.root / "store" / identifier / filename
+
+    def read(self, identifier, filename):
+        with self.item(identifier, filename).open() as handle:
+            return json.load(handle)
+
+    def graph(self, model_id):
+        return Graph.model_validate(self.read(model_id, "graph.json"))
+
+    def session(self, profile_id):
+        return ProfileSession.model_validate(self.read(profile_id, "profile.json"))
+
+    def import_model(self, filename: str, encodings: str | None = None, name: str | None = None,
+                     origin: str | None = None, target_device: str | None = None,
+                     compatibility: dict | None = None) -> dict[str, Any]:
+        path = self.inbox_path(filename, {".onnx", ".bin"})
+        model = graph.read_model(path) if path.suffix.lower() == ".onnx" else None
+        payload = model.SerializeToString(deterministic=True) if model is not None else path.read_bytes()
+        raw_enc = self.inbox_path(encodings, {".json", ".encodings"}).read_bytes() if encodings else b""
+        parsed_enc = graph.parse_encodings(json.loads(raw_enc)) if encodings else None
+        if model is None and encodings:
+            raise ValueError("Encodings require an ONNX graph")
+        model_sha = digest(payload)
+        identity = json.dumps([model_sha, digest(raw_enc), path.suffix.lower(), name or path.stem, origin,
+                               target_device, compatibility], sort_keys=True)
+        model_id = f"model-{digest(identity.encode())[:24]}"
+        artifact = ModelArtifact(
+            id=model_id, sha256=model_sha, name=name or path.stem, format="ONNX" if model is not None else "HTP_CONTEXT",
+            origin=origin, target_device=target_device, compatibility=compatibility or {},
+        )
+        if model is not None:
+            result = graph.inspect(model, artifact, parsed_enc)
+            atomic_write(self.item(model_id, "model.onnx"), payload)
+            if encodings:
+                atomic_write(self.item(model_id, "encodings.json"), raw_enc)
+            atomic_write(self.item(model_id, "graph.json"), encode(result.model_dump()))
+        else:
+            atomic_write(self.item(model_id, "context.bin"), payload)
+        atomic_write(self.item(model_id, "artifact.json"), encode(artifact.model_dump()))
+        return {"artifact": artifact.model_dump(), "deep_link": self.link("graph", model=model_id)}
+
+    def inspect_graph(self, model_id: str) -> dict[str, Any]:
+        return {**self.graph(model_id).model_dump(), "deep_link": self.link("graph", model=model_id)}
+
+    def save_profile(self, model_id, raw, format, provenance, backend=None, profiler_version=None, device=None,
+                     conditions=None, latency=None, outputs=None, mappings=None):
+        if format not in profiles.ADAPTERS:
+            raise ValueError(f"Supported profile formats: {', '.join(profiles.ADAPTERS)}. Other formats are Future Integration.")
+        if provenance not in {"measured", "imported", "fixture"}:
+            raise ValueError("Invalid profile provenance")
+        adapter = profiles.ADAPTERS[format]
+        model = self.graph(model_id)
+        metadata = [model_id, format, provenance, backend, profiler_version, device, conditions, latency, mappings]
+        profile_id = f"profile-{digest(json.dumps(metadata, sort_keys=True).encode() + raw)[:24]}"
+        session = ProfileSession(
+            id=profile_id, model_id=model_id, source=adapter.source, provenance=provenance, backend=backend,
+            profiler_version=profiler_version, device=device or {}, conditions={**(conditions or {}), "adapter": format},
+            events=[], mappings=[], latency_us=latency,
+        )
+        adapter.parse(raw, session, model)
+        if mappings is not None:
+            supplied = [NodeMapping.model_validate({**entry, "method": "provided"}) for entry in mappings]
+            graph_ids = {node.id for node in model.nodes}
+            operation_ids = {event.operation for event in session.events if event.operation is not None}
+            if any(not item.operation_ids or not set(item.operation_ids) <= operation_ids
+                   or not item.node_ids or not set(item.node_ids) <= graph_ids for item in supplied):
+                raise ValueError("Mapping references an unknown operation or graph node")
+            overridden = {operation for item in supplied for operation in item.operation_ids}
+            session.mappings = supplied + [item for item in session.mappings if not overridden.intersection(item.operation_ids)]
+        atomic_write(self.item(profile_id, "trace.json"), raw)
+        if outputs is not None:
+            atomic_write(self.item(profile_id, "outputs.npz"), outputs)
+        atomic_write(self.item(profile_id, "profile.json"), encode(session.model_dump()))
+        return self.profile_summary(session)
+
+    def profile_summary(self, session):
+        return {
+            **session.model_dump(exclude={"events", "mappings"}), "event_count": len(session.events),
+            "deep_link": self.link("timeline", profile=session.id), "raw_trace": f"/api/profiles/{session.id}/raw",
+        }
+
+    def import_profile(self, model_id: str, filename: str, format: str = "ort-chrome-v1", fixture: bool = False,
+                       backend: str | None = None, profiler_version: str | None = None,
+                       device: dict | None = None, conditions: dict | None = None, mapping_file: str | None = None,
+                       framework_csv: str | None = None) -> dict[str, Any]:
+        raw = self.inbox_path(filename, {".json"}).read_bytes()
+        mapping = json.loads(self.inbox_path(mapping_file, {".json"}).read_bytes()) if mapping_file else None
+        if framework_csv:
+            if format != "qnn-optrace-chrome-v2.50" or mapping is not None:
+                raise ValueError("Framework CSV requires the QAIRT 2.50 Optrace format and a single mapping source")
+            framework = self.inbox_path(framework_csv, {".csv"}).read_bytes()
+            mapping = qnn.optrace_onnx_mappings(raw, framework, self.graph(model_id))
+        if mapping is not None and (not isinstance(mapping, list) or any(not isinstance(x, dict) for x in mapping)):
+            raise ValueError("Expected a list of operation-to-node mappings")
+        return self.save_profile(model_id, raw, format, "fixture" if fixture else "imported",
+                                 backend, profiler_version, device, conditions, mappings=mapping)
+
+    def run_ort_profile(self, model_id: str, inputs: str, warmup: int = 30, repeats: int = 200, trace_runs: int = 5) -> dict[str, Any]:
+        model = self.item(model_id, "model.onnx")
+        sample = self.inbox_path(inputs, {".npz"})
+        if not model.is_file():
+            raise ValueError("ORT profiling requires an imported ONNX model")
+        with tempfile.TemporaryDirectory(dir=self.root) as folder:
+            work = Path(folder)
+            raw, latency, conditions, version = profiles.benchmark(model, sample, work, warmup, repeats, trace_runs)
+            device = {"os": platform.system(), "os_version": platform.mac_ver()[0] or platform.release(),
+                      "arch": platform.machine(), "cpu": platform.processor() or None}
+            return self.save_profile(model_id, raw, "ort-chrome-v1", "measured", "CPUExecutionProvider", version,
+                                     device, conditions, latency, (work / "outputs.npz").read_bytes())
+
+    def profile(self, profile_id):
+        session = self.session(profile_id)
+        return {**self.profile_summary(session), "events": [event.model_dump() for event in session.events],
+                "mappings": [item.model_dump() for item in session.mappings]}
+
+    def get_hotspots(self, profile_id: str, level: str = "module", limit: int = 10) -> dict[str, Any]:
+        if not 1 <= limit <= 10000:
+            raise ValueError("Limit must be 1–10000")
+        session = self.session(profile_id)
+        model = self.graph(session.model_id)
+        return {
+            "profile_id": profile_id, "backend": session.backend, "source": session.source,
+            "provenance": session.provenance, "unit": session.unit,
+            "hotspots": [{**item.model_dump(), "deep_link": self.link("diagnosis", profile=profile_id, hotspot=item.id,
+                                                                      level=level)}
+                         for item in analysis.rank(model, session, level)[:limit]],
+        }
+
+    def explain_hotspot(self, profile_id: str, hotspot_id: str, level: str = "module") -> dict[str, Any]:
+        session = self.session(profile_id)
+        model = self.graph(session.model_id)
+        hotspot = next((item for item in analysis.rank(model, session, level) if item.id == hotspot_id), None)
+        if hotspot is None:
+            raise ValueError("Unknown hotspot")
+        nodes = [node for node in model.nodes if node.id in hotspot.node_ids]
+        first_event = next(event for event in session.events if event.id == hotspot.evidence_ids[0])
+        suggestion = analysis.hypothesis(hotspot.module, {node.op for node in nodes})
+        if hotspot.module in {"Unknown", "Shared"}:
+            suggestion.mechanism = "The operation duration is available, but its module attribution is incomplete."
+            suggestion.adaptation = "Import compiler mappings and check operation boundaries before editing the graph."
+        if session.unit == "cycles":
+            suggestion.metrics = ["Operation cycles from equivalent device captures",
+                                  "QNN basic-profile execution p50 and p95 on matched inputs", "Output agreement"]
+            if hotspot.module not in {"Unknown", "Shared"}:
+                suggestion.mechanism = "The device trace exposes operation cycles and hardware resources for the mapped operation."
+                suggestion.adaptation = "Run a matched HTP experiment and inspect the affected operation and graph execution."
+        evidence_ids = set(hotspot.evidence_ids)
+        operation_ids = {event.operation for event in session.events if event.id in evidence_ids}
+        mapping_proof = [mapping.model_dump() for mapping in session.mappings
+                         if mapping.evidence and operation_ids.intersection(mapping.operation_ids)]
+        return {
+            **hotspot.model_dump(), "mapping_proof": mapping_proof, "source": session.source, "backend": session.backend, "provenance": session.provenance,
+            "nodes": [{**node.model_dump(), "output_tensors": [model.tensors[t].model_dump() for t in node.outputs if t],
+                       "quantization_details": [model.quantization[i].model_dump() for i in node.quantization]} for node in nodes],
+            "example_evidence": first_event.model_dump(), "raw_trace": f"/api/profiles/{profile_id}/raw",
+            "hypothesis": suggestion.model_dump(),
+            "deep_link": self.link("timeline", profile=profile_id, event=first_event.id),
+        }
+
+    def suggest_experiments(self, profile_id: str, limit: int = 3) -> dict[str, Any]:
+        summary = self.get_hotspots(profile_id, "module", limit)
+        summary["suggestions"] = [
+            {key: value for key, value in self.explain_hotspot(profile_id, item["id"]).items()
+             if key in {"id", "module", "hypothesis", "evidence_ids", "deep_link"}}
+            for item in summary.pop("hotspots")
+        ]
+        return summary
+
+    def compare_experiments(self, baseline: str, candidate: str, hypothesis: str | None = None,
+                            atol: float = 1e-5, rtol: float = 1e-4) -> dict[str, Any]:
+        if any(not math.isfinite(value) or value < 0 for value in (atol, rtol)):
+            raise ValueError("Comparison tolerances must be finite and nonnegative")
+        left, right = self.session(baseline), self.session(candidate)
+        left_graph, right_graph = self.graph(left.model_id), self.graph(right.model_id)
+        keys = ("input_sha256", "warmup", "repeats", "trace_runs", "intra_op_threads", "inter_op_threads",
+                "execution_mode", "graph_optimization", "profiling_level", "perf_profile", "precision", "capture_protocol")
+        matched = bool(left.latency_us and right.latency_us and left.source == right.source
+                       and left.backend == right.backend and left.device == right.device
+                       and left.profiler_version == right.profiler_version
+                       and left.latency_us.get("scope") == right.latency_us.get("scope")
+                       and left.conditions.get("input_sha256")
+                       and all(left.conditions.get(k) == right.conditions.get(k) for k in keys))
+        latency = {"comparable": matched, "unit": "us"}
+        if matched and left.latency_us.get("label"):
+            latency["label"] = left.latency_us["label"]
+        for key in ("p50", "p95"):
+            before = left.latency_us.get(key) if left.latency_us else None
+            after = right.latency_us.get(key) if right.latency_us else None
+            latency[key] = {"baseline": before, "candidate": after,
+                            "delta_pct": (after / before - 1) * 100 if matched and before and after is not None else None}
+        numeric = None
+        a_path, b_path = (self.item(identifier, "outputs.npz") for identifier in (baseline, candidate))
+        if (left.conditions.get("input_sha256") and left.conditions["input_sha256"] == right.conditions.get("input_sha256")
+                and left.conditions.get("verification_input_sha256") == right.conditions.get("verification_input_sha256")):
+            if a_path.is_file() and b_path.is_file():
+                with np.load(a_path, allow_pickle=False) as a, np.load(b_path, allow_pickle=False) as b:
+                    try:
+                        numeric = profiles.output_error(dict(a.items()), dict(b.items()), atol=atol, rtol=rtol)
+                    except ValueError as exc:
+                        numeric = {"passed": False, "error": str(exc)}
+        a_costs = {item.module: item for item in analysis.rank(left_graph, left, "module")}
+        b_costs = {item.module: item for item in analysis.rank(right_graph, right, "module")}
+        module_costs = []
+        for module in sorted(a_costs.keys() | b_costs.keys()):
+            row = {"module": module}
+            for side, bucket, session in (("baseline", a_costs, left), ("candidate", b_costs, right)):
+                cost = bucket.get(module)
+                row[f"{side}_us"] = cost.total_us if cost else None
+                if session.unit == "cycles":
+                    row[f"{side}_cycles"] = cost.total_cycles if cost else None
+            module_costs.append(row)
+        identity = [baseline, candidate, hypothesis]
+        if (atol, rtol) != (1e-5, 1e-4):
+            identity += [atol, rtol]
+        identifier = f"experiment-{digest(encode(identity))[:24]}"
+        result = ExperimentResult(
+            id=identifier, baseline=baseline, candidate=candidate, hypothesis=hypothesis, numeric=numeric,
+            latency=latency, graph_diff=graph.diff(left_graph, right_graph),
+            module_costs=module_costs,
+        )
+        response = {**result.model_dump(), "deep_link": self.link("diagnosis", experiment=identifier, profile=baseline),
+                    "trace_runs": {"baseline": left.conditions.get("trace_runs"), "candidate": right.conditions.get("trace_runs")},
+                    "sources": {"baseline": [left.source, left.backend, left.provenance],
+                                "candidate": [right.source, right.backend, right.provenance]}}
+        atomic_write(self.item(identifier, "experiment.json"), encode(response))
+        return response
+
+    def catalog(self):
+        return {
+            key: [json.loads(path.read_bytes()) for path in sorted((self.root / "store").glob(pattern),
+                    key=lambda entry: entry.stat().st_mtime, reverse=True)]
+            for key, pattern in (("models", "model-*/artifact.json"), ("experiments", "experiment-*/experiment.json"))
+        } | {"profiles": [self.profile_summary(ProfileSession.model_validate_json(path.read_bytes()))
+                         for path in sorted((self.root / "store").glob("profile-*/profile.json"),
+                                            key=lambda entry: entry.stat().st_mtime, reverse=True)]}
+
+    def report(self, experiment_id):
+        exp = self.read(experiment_id, "experiment.json")
+        profiles = [self.session(exp[key]) for key in ("baseline", "candidate")]
+        lines = ["# HTP Insight experiment", "", f"Experiment `{exp['id']}`", "",
+                 exp["hypothesis"] or "Hypothesis unavailable", "",
+                 f"| {exp['latency'].get('label', 'Uninstrumented latency')} | Baseline (µs) | Candidate (µs) | Change |",
+                 "| --- | ---: | ---: | ---: |"]
+        def display(value):
+            return "Unavailable" if value is None else f"{value:.3f}"
+
+        for metric in ("p50", "p95"):
+            row = exp["latency"][metric]
+            change = f"{row['delta_pct']:+.2f}%" if row["delta_pct"] is not None else "Unavailable"
+            lines.append(f"| {metric} | {display(row['baseline'])} | {display(row['candidate'])} | {change} |")
+        lines.extend(["", "## Numerical validation", "", "```json", json.dumps(exp["numeric"], indent=2), "```",
+                      "", "## Trace evidence", "",
+                      "| Semantic module | Baseline operation sum | Candidate operation sum |",
+                      "| --- | ---: | ---: |"])
+        for row in exp["module_costs"]:
+            measures = []
+            for side, session in zip(("baseline", "candidate"), profiles):
+                metric = row.get(f"{side}_{session.unit}")
+                suffix = "µs" if session.unit == "us" else "cycles"
+                measures.append(f"{display(metric)} {suffix}" if metric is not None else "Unavailable")
+            lines.append(f"| {row['module']} | {measures[0]} | {measures[1]} |")
+        lines.append("")
+        for session in profiles:
+            top = self.get_hotspots(session.id, limit=1)["hotspots"]
+            lines.append(f"- {session.source} / {session.backend} / {session.provenance}, device {session.device}. "
+                         f"[Timeline]({self.link('timeline', profile=session.id)})"
+                         + (f", strongest bucket {top[0]['module']}, evidence `{top[0]['evidence_ids'][0]}`." if top else "."))
+        scopes = sorted({analysis.timing_scope(session) for session in profiles})
+        lines.extend(["", *scopes, "",
+                      f"Operation-duration sums cover {exp['trace_runs']} sampled runs.", "",
+                      "## Experiment conditions", "", "```json",
+                      json.dumps({name: {"profiler_version": session.profiler_version, "conditions": session.conditions}
+                                  for name, session in zip(("baseline", "candidate"), profiles)}, indent=2), "```", "",
+                      "## Graph changes", "", "```json", json.dumps(exp["graph_diff"], indent=2), "```", ""])
+        return "\n".join(lines)

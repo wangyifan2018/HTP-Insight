@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "htp-insight": {
+      "type": "stdio",
+      "command": "make",
+      "args": ["--no-print-directory", "mcp"]
+    }
+  }
+}

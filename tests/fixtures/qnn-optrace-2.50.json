@@ -1,0 +1,107 @@
+{
+  "header": {
+    "header_version": {
+      "major": 1,
+      "minor": 0,
+      "patch": 0
+    },
+    "version": {
+      "major": 1,
+      "minor": 1,
+      "patch": 0
+    },
+    "artifact_type": "OP_TRACE"
+  },
+  "traceEvents": [
+    {
+      "name": "q::ConvLayer.opt.weights_to_vtcm",
+      "ph": "X",
+      "tid": 256,
+      "pid": 0,
+      "ts": 11331,
+      "dur": 2583,
+      "args": {
+        "ID": "0x0000453e00000036",
+        "HTP Op Type": "q::ConvLayer.opt.weights_to_vtcm",
+        "Dims": [
+          1,
+          1,
+          128,
+          32
+        ],
+        "Data Type": "QInt8",
+        "Rank": 4,
+        "Step Size": 0.000695699,
+        "Zero Offset": 0,
+        "Inputs Ops": [
+          "0x0000471a00000036"
+        ],
+        "Flags": [
+          "dma"
+        ],
+        "Cycles per Packet": 45.3158,
+        "QNN Op Type": "MatMul",
+        "QNN Op Name": "/attention/MatMul",
+        "Start Cycle": 25432491530517,
+        "Duration (cycles)": 2583,
+        "Dominant Path Cycles": 2583
+      }
+    },
+    {
+      "name": "q::ConvLayer.opt.weights_to_vtcm",
+      "ph": "X",
+      "tid": 256,
+      "pid": 4,
+      "ts": 11331,
+      "dur": 2583,
+      "args": {
+        "ID": "0x0000453e00000036",
+        "HTP Op Type": "q::ConvLayer.opt.weights_to_vtcm",
+        "Dims": [
+          1,
+          1,
+          128,
+          32
+        ],
+        "Data Type": "QInt8",
+        "Rank": 4,
+        "Step Size": 0.000695699,
+        "Zero Offset": 0,
+        "Inputs Ops": [
+          "0x0000471a00000036"
+        ],
+        "Flags": [
+          "dma"
+        ],
+        "Cycles per Packet": 45.3158,
+        "QNN Op Type": "MatMul",
+        "QNN Op Name": "/attention/MatMul",
+        "Start Cycle": 25432491530517,
+        "Duration (cycles)": 2583,
+        "Dominant Path Cycles": 2583
+      }
+    },
+    {
+      "name": "$Const",
+      "ph": "X",
+      "tid": 1,
+      "pid": 0,
+      "ts": 129386,
+      "dur": 5,
+      "args": {
+        "ID": "0x000000000000003e",
+        "HTP Op Type": "$Const",
+        "Dims": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "Data Type": "Float32",
+        "Rank": 4,
+        "Step Size": 1,
+        "Zero Offset": 0
+      }
+    }
+  ]
+}

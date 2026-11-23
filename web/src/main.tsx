@@ -1,0 +1,448 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { FormEvent, ReactNode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { Activity, ArrowDownToLine, ArrowRight, Box, ChevronDown, CircuitBoard, Clock3, Cpu, FileJson, GitFork, Layers3, ScanLine, Search, Workflow } from 'lucide-react';
+import type { Catalog, Evidence, Experiment, Explanation, Graph, Hotspot, Node, Profile, TimeUnit } from './types';
+import './style.css';
+
+const views = { graph: 'Graph Explorer', timeline: 'Profile Timeline', diagnosis: 'Diagnosis & Comparison' } as const;
+type View = keyof typeof views;
+type Query = {view: View; model?: string; profile?: string; experiment?: string; node?: string; event?: string; hotspot?: string; level?: string};
+
+function readQuery(): Query {
+  const args = Object.fromEntries(new URLSearchParams(location.search));
+  return { ...args, view: Object.hasOwn(views, args.view) ? args.view as View : 'graph' };
+}
+
+async function api<T>(path: string, request?: RequestInit): Promise<T> {
+  const response = await fetch('/api' + path, request);
+  if (!response.ok) {
+    const body = await response.json();
+    throw new Error(typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail));
+  }
+  return response.json() as Promise<T>;
+}
+
+function useData<T>(path?: string) {
+  const [state, setState] = useState<{path: string; value?: T; error?: string}>();
+  useEffect(() => {
+    if (!path) return;
+    let active = true;
+    api<T>(path).then(value => { if (active) setState({path, value}); })
+      .catch(error => { if (active) setState({path, error: error.message}); });
+    return () => { active = false; };
+  }, [path]);
+  return state?.path === path ? state : undefined;
+}
+
+const measure = (v?: number | null, unit: TimeUnit = 'us') => v == null ? 'Unavailable' : v.toLocaleString('en-US', {maximumFractionDigits: 2}) + (unit === 'cycles' ? ' cycles' : ' µs');
+const us = (v?: number | null) => measure(v);
+const hotspotCost = (row?: Hotspot) => row?.total_us ?? row?.total_cycles;
+
+const percent = (v?: number | null) => v == null ? '—' : (v * 100).toFixed(1) + '%';
+const label = (value: string) => ({attention: 'Attention', mlp: 'MLP', input_projection: 'Input projection', output_projection: 'Output projection', residual_attn: 'Attention residual', residual_mlp: 'MLP residual'}[value] ?? value);
+const short = (name: string) => name.split('/').filter(Boolean).slice(-2).join('/');
+
+function Panel({title, icon, actions, children, className = ''}: {title: string; icon?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string}) {
+  return <section className={'panel ' + className}><div className="panel-head"><div>{icon}{title}</div>{actions}</div>{children}</section>;
+}
+
+function Stat({title, value, note}: {title: string; value: ReactNode; note?: string}) {
+  return <div className="stat"><span>{title}</span><strong>{value}</strong>{note && <small>{note}</small>}</div>;
+}
+
+function GraphCanvas({nodes, selected, costs, select}: {nodes: Node[]; selected?: string; costs: Map<string, number>; select: (id: string) => void}) {
+  const canvas = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const viewport = canvas.current;
+    const target = viewport?.querySelector<HTMLButtonElement>('.graph-node.selected');
+    if (!target || !viewport) return;
+    const {offsetLeft, offsetTop, offsetWidth, offsetHeight} = target;
+    if (offsetLeft < viewport.scrollLeft) viewport.scrollLeft = offsetLeft - 12;
+    else if (offsetLeft + offsetWidth > viewport.scrollLeft + viewport.clientWidth)
+      viewport.scrollLeft = offsetLeft + offsetWidth - viewport.clientWidth + 12;
+    if (offsetTop < viewport.scrollTop) viewport.scrollTop = offsetTop - 12;
+    else if (offsetTop + offsetHeight > viewport.scrollTop + viewport.clientHeight)
+      viewport.scrollTop = offsetTop + offsetHeight - viewport.clientHeight + 12;
+  }, [selected]);
+  const positions = new Map<string, {x: number; y: number; col: number}>();
+  const rowCount = new Map<number, number>();
+  for (const node of nodes) {
+    const prior = node.predecessors.map(id => positions.get(id)).filter(p => p !== undefined);
+    const col = prior.length ? 1 + Math.max(...prior.map(p => p.col)) : 0;
+    const row = rowCount.get(col) ?? 0;
+    rowCount.set(col, row + 1);
+    positions.set(node.id, {x: 24 + col * 150, y: 24 + row * 62, col});
+  }
+  const width = Math.max(0, ...[...positions.values()].map(p => p.x)) + 152;
+  const height = Math.max(200, Math.max(0, ...[...positions.values()].map(p => p.y)) + 76);
+  const peak = Math.max(1, ...costs.values());
+  return <div className="canvas" ref={canvas} aria-label="ONNX dependency graph"><div className="canvas-inner" style={{width, height}}>
+    <svg width={width} height={height} aria-hidden="true">
+      {nodes.flatMap(node => node.predecessors.map(id => {
+        const from = positions.get(id);
+        const to = positions.get(node.id)!;
+        if (!from) return null;
+        const mid = (from.x + 122 + to.x) / 2;
+        return <path key={id + ':' + node.id} className={selected === id || selected === node.id ? 'active-edge' : ''} d={`M ${from.x + 122},${from.y + 20} C ${mid},${from.y + 20} ${mid},${to.y + 20} ${to.x},${to.y + 20}`}/>;
+      }))}
+    </svg>
+    {nodes.map(node => {
+      const p = positions.get(node.id)!;
+      return <button className={'graph-node ' + (selected === node.id ? 'selected' : '') + ((costs.get(node.id) ?? 0) > peak * .5 ? ' hot' : '')}
+        data-node={node.id} key={node.id} style={{left:p.x, top:p.y}} onClick={() => select(node.id)}>
+        <b>{node.op}</b><small>{node.id} · {short(node.name) || node.op}</small>
+      </button>;
+    })}
+  </div></div>;
+}
+
+function GraphView({graph, query, profile, nodeRanks, moduleRanks, go}: {graph: Graph; query: Query; profile?: Profile; nodeRanks: Hotspot[]; moduleRanks: Hotspot[]; go: (q: Partial<Query>) => void}) {
+  const [search, setSearch] = useState('');
+  const [chosenModule, setModule] = useState<string>();
+  const best = moduleRanks.find(item => graph.modules.some(mod => mod.id === item.id));
+  const node = graph.nodes.find(n => n.id === query.node);
+  const module = node?.module || (graph.modules.some(m => m.id === chosenModule) ? chosenModule : undefined) || best?.id || graph.modules[0]?.id;
+  const local = graph.nodes.filter(n => n.module === module);
+  const costs = new Map(nodeRanks.filter(row => row.node_ids.length === 1).flatMap(row => { const cost = hotspotCost(row); return cost == null ? [] : [[row.node_ids[0], cost] as const]; }));
+  const picked = node || [...local].sort((a, b) => (costs.get(b.id) ?? -1) - (costs.get(a.id) ?? -1))[0];
+  const match = nodeRanks.find(row => row.node_ids.length === 1 && row.node_ids[0] === picked?.id);
+  const shared = nodeRanks.filter(row => row.node_ids.length > 1 && row.node_ids.includes(picked?.id ?? ''));
+  const event = match?.evidence_ids[0] ?? shared[0]?.evidence_ids[0];
+  const raw = useData<{raw: unknown}>(profile && event ? '/profiles/' + profile.id + '/events/' + event : undefined);
+  const nodeIndex = new Map(graph.nodes.map(n => [n.id, n]));
+  const select = (id: string) => go({node: id});
+  return <>
+    <div className="stats">
+      <Stat title="Graph nodes" value={graph.nodes.length} note={graph.architecture}/>
+      <Stat title="Initializer elements" value={graph.initializer_elements.toLocaleString()} note={graph.inputs.map(t => graph.tensors[t].shape?.join(' × ') ?? t).join(' / ')}/>
+      <Stat title="Quantization records" value={graph.quantization.length} note={graph.quantization.length ? [...new Set(graph.quantization.map(q => q.format))].join(', ') : 'No encodings attached'}/>
+      <Stat title={profile?.provenance === "measured" ? "Top measured module" : "Top trace module"} value={best ? label(best.module) : 'Unavailable'} note={best && `${percent(best.share)} of operation duration`}/>
+    </div>
+    <div className="graph-layout">
+      <Panel title="Model hierarchy" icon={<Layers3 size={15}/>} className="tree">
+        <label className="search"><Search size={15}/><input placeholder="Find an operator" value={search} onChange={e => setSearch(e.target.value)}/></label>
+        <div className="tree-root"><GitFork size={14}/>{graph.architecture}</div>
+        <div className="tree-scroll">{graph.modules.map(mod => {
+          const shown = mod.nodes.map(id => nodeIndex.get(id)!).filter(item => (item.id + ' ' + item.op + ' ' + item.name).toLowerCase().includes(search.toLowerCase()));
+          if (!shown.length) return null;
+          const open = mod.id === module || Boolean(search);
+          return <div key={mod.id}>
+            <button className={mod.id === module ? 'module chosen' : 'module'} onClick={() => {setModule(mod.id); go({node: undefined});}}>
+              <ChevronDown size={14} className={open ? '' : 'collapsed'}/><Box size={14}/><span>{label(mod.id)}</span><small>{mod.nodes.length}</small>
+            </button>
+            {open && shown.map(item => <button className={'tree-node ' + (picked?.id === item.id ? 'selected' : '')} key={item.id} onClick={() => select(item.id)}>
+              <span>{item.op}</span><small>{item.id}</small>
+            </button>)}
+          </div>;
+        })}</div>
+      </Panel>
+      <Panel title={label(module ?? 'Graph')} icon={<Workflow size={16}/>} className="workspace" actions={<span className="quiet">{local.length} operators</span>}>
+        <GraphCanvas nodes={local} selected={picked?.id} costs={costs} select={select}/>
+        <div className="panel-foot"><span><i className="legend blue"/> Operator</span><span><i className="legend gold"/> Higher trace duration</span></div>
+      </Panel>
+      <Panel title="Node inspector" icon={<ScanLine size={15}/>} className="inspector">
+        {picked ? <div className="detail">
+          <p className="tag">{picked.id} · {label(picked.module)}</p><h2>{picked.op}</h2><div className="code break">{picked.name || 'Unnamed node'}</div>
+          <dl><dt>Operation duration</dt><dd>{measure(hotspotCost(match), match?.unit)}</dd><dt>Trace events</dt><dd>{match?.calls ?? 'Unavailable'}</dd></dl>
+          {!!shared.length && <p className="quiet">Execution time shared across {shared.flatMap(item => item.node_ids).join(', ')}.</p>}
+          <h3>Inputs and outputs</h3>
+          {[...picked.inputs, ...picked.outputs].filter(Boolean).map((name, i) => {
+            const t = graph.tensors[name];
+            return <div className="tensor" key={name + i}><b title={name}>{short(name)}</b><span>{t.dtype ?? 'Unknown'} · {t.shape == null ? 'unknown shape' : t.shape.map(d => d ?? '?').join(' × ') || 'scalar'}</span></div>;
+          })}
+          {!!picked.predecessors.length && <div className="inline"><span className="quiet">Predecessors</span>{picked.predecessors.map(id => <button key={id} onClick={() => select(id)}>{id}</button>)}</div>}
+          <h3>Quantization</h3>
+          {picked.quantization.length ? picked.quantization.map(i => {
+            const q = graph.quantization[i];
+            return <div className="tensor" key={i}><b>{q.operation ?? q.format} · {q.dtype ?? 'Unknown dtype'}</b><span>{q.bitwidth ?? 'Unknown'} bits · {q.scale?.length ?? '—'} scale(s) · axis {q.axis ?? '—'}</span>
+              {q.scale && <span>Scale {q.scale.slice(0, 3).map(v => v.toPrecision(4)).join(', ')}{q.scale.length > 3 ? ', …' : ''}</span>}
+              {q.zero_point && <span>Zero point {q.zero_point.slice(0, 3).join(', ')}{q.zero_point.length > 3 ? ', …' : ''}</span>}</div>;
+          }) : <p className="quiet">No encoding associated with this node.</p>}
+          {event && <><button className="action wide" onClick={() => go({view:'timeline', node:picked.id, event})}>Locate in timeline <ArrowRight size={15}/></button>
+            <details><summary>Original event</summary><code className="break">{event}</code><pre>{JSON.stringify(raw?.value?.raw, null, 2)}</pre></details></>}
+        </div> : <p className="detail quiet">No graph node selected.</p>}
+      </Panel>
+    </div>
+  </>;
+}
+
+function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q: Partial<Query>) => void}) {
+  const [runId, setRun] = useState<string>();
+  const runs = profile.events.filter(event => event.kind === 'inference');
+  const selected = profile.events.find(event => event.id === query.event);
+  const run = runs.find(row => row.id === (selected?.parent ?? runId)) ?? runs[0];
+  const mappings = new Map<string, Set<string>>();
+  for (const map of profile.mappings) {
+    for (const op of map.operation_ids) {
+      const ids = mappings.get(op) ?? new Set<string>();
+      map.node_ids.forEach(id => ids.add(id));
+      mappings.set(op, ids);
+    }
+  }
+  const timelineEvents = profile.events.filter(row => row.kind !== 'inference');
+  const events = timelineEvents.filter(row => !run || row.parent === run.id);
+  const shown = events.length ? events : timelineEvents;
+  const reference = selected ?? shown.find(row => mappings.get(row.operation ?? '')?.has(query.node ?? '')) ?? shown[0];
+  const ids = [...(mappings.get(reference?.operation ?? '') ?? [])];
+  const operation = reference?.operation;
+  const proof = profile.mappings.find(mapping => mapping.evidence && operation
+    && mapping.operation_ids.includes(operation))?.evidence;
+  const min = run?.start ?? shown[0]?.start ?? 0;
+  const max = run ? run.start + run.duration : Math.max(min + 1, ...shown.map(row => row.start + row.duration));
+  const range = Math.max(1, max - min);
+  const raw = useData<{raw: unknown}>(reference ? '/profiles/' + profile.id + '/events/' + reference.id : undefined);
+  const tracks = new Map<string, Evidence[]>();
+  for (const row of shown) {
+    const track = row.track || row.resource || 'Unspecified';
+    const eventsOnTrack = tracks.get(track) ?? [];
+    eventsOnTrack.push(row);
+    tracks.set(track, eventsOnTrack);
+  }
+  return <>
+    <div className="stats">
+      {profile.unit === 'cycles' ? <>
+        <Stat title={profile.source === 'Optrace' ? 'HTP operations' : 'Foreground operations'}
+          value={shown.filter(row => row.kind === 'node').length}
+          note={profile.source === 'Optrace' ? 'Unique measured events' : 'Viewer-averaged linting'}/>
+        <Stat title="Reported resources" value={[...new Set(shown.flatMap(row => row.resource?.split(', ') ?? []))].join(' · ') || 'Unavailable'}/>
+      </> : <>
+        <Stat title="Latency p50" value={us(profile.latency_us?.p50)} note="Uninstrumented"/>
+        <Stat title="Latency p95" value={us(profile.latency_us?.p95)} note="Uninstrumented"/>
+      </>}
+      <Stat title="Trace events" value={profile.event_count} note={profile.source + ' · ' + profile.provenance}/>
+      <Stat title="Selected window" value={measure(range, profile.unit)} note={run ? 'Instrumented model_run' : profile.source === 'Optrace' && profile.unit === 'cycles' ? 'QAIRT Optrace' : profile.unit === 'cycles' ? 'QAIRT linting viewer' : 'Complete operation events'}/>
+    </div>
+    <div className="timeline-layout">
+      <Panel title="Operation timeline" icon={<Activity size={16}/>} actions={<div className="inline">
+        {!!runs.length && <select aria-label="Trace run" value={run?.id} onChange={e => {setRun(e.target.value); go({event:undefined, node:undefined});}}>
+          {runs.map((row, i) => <option key={row.id} value={row.id}>Run {i+1}</option>)}
+        </select>}<a className="action" href={profile.raw_trace}><ArrowDownToLine size={14}/> Raw trace</a></div>}>
+        <div className="timeline-body">
+          <div className="axis">{[0,.25,.5,.75,1].map(n => <span key={n}>{measure(n * range, profile.unit)}</span>)}</div>
+          {[...tracks.entries()].map(([track, rows]) => <div className="track" key={track}>
+            <div>{profile.source === 'ORT' ? 'CPU · ' : ''}{track}</div>
+            <div className="track-bars">{rows.map(row => <button key={row.id} aria-label={row.name} data-event={row.id} title={row.name + ' · ' + measure(row.duration, row.unit)}
+              className={row.id === reference?.id ? 'active' : ''} style={{left: Math.max(0, (row.start-min)/range*100) + '%', width: row.duration/range*100 + '%'}}
+              onClick={() => go({event:row.id, node:[...(mappings.get(row.operation ?? '') ?? [])][0]})}/>)}</div>
+          </div>)}
+          <div className="event-list"><table><thead><tr><th>Operation order</th><th>Offset</th><th>Duration</th></tr></thead>
+            <tbody>{shown.map(row => <tr key={row.id} className={row.id === reference?.id ? 'current' : ''}>
+              <td><button aria-pressed={row.id === reference?.id} onClick={() => go({event:row.id, node:[...(mappings.get(row.operation ?? '') ?? [])][0]})}>{short(row.name.replace(/_kernel_time$/, ''))}</button></td>
+              <td>{measure(row.start-min, row.unit)}</td><td>{measure(row.duration, row.unit)}</td>
+            </tr>)}</tbody></table></div>
+        </div>
+      </Panel>
+      <Panel title="Event inspector" icon={<Clock3 size={15}/>}>
+        {reference && <div className="detail"><p className="tag">{profile.source} · {profile.provenance}</p>
+          <h2>{short(reference.name).replace(/_kernel_time$/, '')}</h2>
+          <dl><dt>Duration</dt><dd>{measure(reference.duration, reference.unit)}</dd>{reference.resource && <><dt>Resources</dt><dd>{reference.resource}</dd></>}<dt>Raw index</dt><dd>{reference.raw_index}</dd><dt>Mapped nodes</dt><dd>{ids.join(', ') || 'Unknown'}</dd></dl>
+          {proof && <details open><summary>Compiler mapping evidence</summary><p>{proof.method}</p>
+            <dl className="mapping-fields"><dt>QNN operation</dt><dd className="break">{proof.qnn_op_name}</dd>
+              <dt>Source ONNX</dt><dd className="break">{proof.source_onnx_names.join(', ')}</dd>
+              <dt>Framework CSV SHA-256</dt><dd className="break">{proof.framework_csv_sha256}</dd></dl></details>}
+          {ids.map(id => <button className="action wide" key={id} onClick={() => go({view:'graph', node:id})}>Locate {id} in graph <ArrowRight size={15}/></button>)}
+          <details><summary>Original event</summary><code className="break">{reference.id}</code><pre>{JSON.stringify(raw?.value?.raw, null, 2)}</pre></details>
+        </div>}
+      </Panel>
+    </div>
+  </>;
+}
+
+function Comparison({exp}: {exp: Experiment}) {
+  return <Panel title="Baseline / Candidate" icon={<GitFork size={16}/>} actions={<div className="inline">
+    <a className="action" href={'/api/experiments/' + exp.id + '?format=md'}><ArrowDownToLine size={13}/> Markdown</a>
+    <a className="action" href={'/api/experiments/' + exp.id + '?format=json'}><FileJson size={13}/> JSON</a></div>}>
+    <div className="detail"><p className="quiet">{exp.hypothesis || 'No hypothesis supplied.'}</p>
+      <div className="comparison-metrics">{(['p50','p95'] as const).map(metric => {
+        const m = exp.latency[metric];
+        return <div key={metric}><small>{metric.toUpperCase()} · {exp.latency.label ?? 'UNINSTRUMENTED'}</small><h2>{us(m.baseline)} <span>→</span> {us(m.candidate)}</h2>
+          {m.delta_pct != null && <b className={m.delta_pct > 0 ? 'slower' : 'faster'}>{m.delta_pct > 0 ? '+' : ''}{m.delta_pct.toFixed(2)}%</b>}</div>;
+      })}</div>
+      <dl><dt>Output validation</dt><dd>{exp.numeric ? exp.numeric.passed ? 'Passed' : 'Failed' : 'Unavailable'}</dd>
+        <dt>Graph nodes</dt><dd>{exp.graph_diff.baseline_nodes} → {exp.graph_diff.candidate_nodes}</dd>
+        {exp.graph_diff.edges_added && <><dt>Graph edges</dt><dd>+{exp.graph_diff.edges_added.length} / −{exp.graph_diff.edges_removed?.length ?? 0}</dd></>}
+        {Object.entries(exp.numeric?.outputs ?? {}).map(([name, output]) => <div className="dl-row" key={name}><dt>{name} max |Δ|</dt><dd>{output.max_abs ?? 'Unavailable'}</dd></div>)}
+      </dl>
+      <p className="quiet">{exp.sources.baseline.filter(Boolean).join(' · ')} → {exp.sources.candidate.filter(Boolean).join(' · ')}</p>
+      {exp.numeric?.error && <p className="error">{exp.numeric.error}</p>}
+      {!exp.latency.comparable && <p className="quiet">Matched latency change unavailable for these conditions.</p>}
+      <details><summary>Module trace differences ({exp.trace_runs.baseline ?? '—'} / {exp.trace_runs.candidate ?? '—'} runs)</summary>
+        <table><thead><tr><th>Module</th><th>Baseline</th><th>Candidate</th></tr></thead><tbody>{exp.module_costs.map(row =>
+          <tr key={row.module}><td>{label(row.module)}</td><td>{row.baseline_cycles == null ? us(row.baseline_us) : measure(row.baseline_cycles, 'cycles')}</td>
+          <td>{row.candidate_cycles == null ? us(row.candidate_us) : measure(row.candidate_cycles, 'cycles')}</td></tr>)}</tbody></table>
+      </details>
+      <details><summary>Operator count changes</summary>{exp.graph_diff.operator_changes.map(row =>
+        <p className="quiet" key={row.module + row.domain + row.op}>{label(row.module)} · {row.op} · {row.baseline} → {row.candidate}</p>)}</details>
+    </div>
+  </Panel>;
+}
+
+function Diagnosis({profile, experiment, hotspots, query, go}: {profile?: Profile; experiment?: Experiment; hotspots: Hotspot[]; query: Query; go:(q:Partial<Query>)=>void}) {
+  const active = hotspots.find(row => row.id === query.hotspot) ?? hotspots[0];
+  const level = query.level === 'node' ? 'node' : 'module';
+  const detail = useData<Explanation>(profile && active ? '/profiles/' + profile.id + '/hotspots/' + encodeURIComponent(active.id) + '?level=' + level : undefined);
+  const explain = detail?.value;
+  return <div className="diagnosis-layout">
+    <div className="stack">
+      <Panel title="Top hotspots" icon={<Activity size={15}/>} actions={<select aria-label="Hotspot level" value={level} onChange={e => go({level:e.target.value, hotspot:undefined})}><option value="module">By module</option><option value="node">{profile?.unit === "cycles" ? "By operation" : "By node"}</option></select>}>
+        {hotspots.length ? <div className="ranking">{hotspots.map(row => <button key={row.id} className={active?.id === row.id ? 'active' : ''} onClick={() => go({hotspot:row.id})}>
+          <span>{level === 'node' ? (profile?.unit === 'cycles' ? row.label : `${row.id} · ${row.label}`) : label(row.module)}</span>
+          <span className="rankbar"><i style={{width:percent(row.share) === '—' ? '0%' : percent(row.share)}}/></span>
+          <b>{measure(hotspotCost(row), row.unit)}</b><small>{percent(row.share)}</small>
+        </button>)}<p className="quiet">{hotspots[0].scope}</p></div> : <p className="detail quiet">Select or import a profile.</p>}
+      </Panel>
+      {explain && <Panel title="Optimization hypothesis" icon={<CircuitBoard size={14}/>}>
+        <div className="detail"><h2>{label(explain.module)}</h2><p>{explain.hypothesis.mechanism}</p>
+          <p>{explain.hypothesis.adaptation}</p><h3>Verification</h3><ul>{explain.hypothesis.metrics.map(metric => <li key={metric}>{metric}</li>)}</ul>
+          <p className="quiet">{explain.hypothesis.risk}</p>
+          <button className="action" onClick={() => go({view:'timeline', event:explain.example_evidence.id, node:explain.node_ids[0]})}>Open trace evidence <ArrowRight size={14}/></button></div>
+      </Panel>}
+    </div>
+    {experiment ? <Comparison exp={experiment}/> : <Panel title="Baseline / Candidate" icon={<GitFork size={15}/>}><p className="detail quiet">Select or create an experiment.</p></Panel>}
+  </div>;
+}
+
+type Action = 'import_model' | 'import_profile' | 'run_ort_profile' | 'compare_experiments';
+
+function ImportDialog({catalog, modelId, profileId, close, done}: {catalog: Catalog; modelId?: string; profileId?: string; close:()=>void; done:(q:Partial<Query>)=>void}) {
+  const [action, setAction] = useState<Action>('import_profile');
+  const [traceFormat, setTraceFormat] = useState('ort-chrome-v1');
+  const [status, setStatus] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const fields = new FormData(e.currentTarget);
+    const args = Object.fromEntries([...fields].filter(([,value]) => value !== ''));
+    let body: Record<string, unknown> = args;
+    if (args.fixture) body = {...args, fixture:true};
+    setBusy(true);
+    setStatus('');
+    try {
+      const result = await api<{id?:string; model_id?:string; artifact?:{id:string}}>('/tools/' + action, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
+      });
+      if (action === 'import_model') done({view:'graph', model:result.artifact?.id, profile:undefined});
+      else if (action === 'compare_experiments') done({view:'diagnosis', experiment:result.id, profile:String(args.baseline), model:undefined});
+      else done({view:'timeline', profile:result.id, model:result.model_id});
+      close();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Request failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+  const optionLabel = (id: string) => catalog.models.find(model => model.id === id)?.name ?? id;
+  return <div className="overlay"><div className="dialog" role="dialog" aria-modal="true" aria-label="Manage local evidence">
+    <div className="panel-head"><div><FileJson size={16}/> Manage local evidence</div><button className="action" onClick={close}>Close</button></div>
+    <form className="detail" onSubmit={submit}>
+      <label>Action<select value={action} onChange={e => setAction(e.target.value as Action)}>
+        <option value="import_profile">Import a profile trace</option><option value="import_model">Import an ONNX model</option>
+        <option value="run_ort_profile">Run ORT CPU profiling</option><option value="compare_experiments">Compare two profiles</option>
+      </select></label>
+      {(action === 'import_profile' || action === 'run_ort_profile') && <label>Model<select required name="model_id" defaultValue={modelId}>
+        {catalog.models.filter(x => x.format === 'ONNX').map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
+      </select></label>}
+      {(action === 'import_model' || action === 'import_profile') && <label>Path relative to runs/inbox<input key={action} name="filename" required placeholder={action === 'import_model' ? 'model.onnx' : 'profile.json'}/></label>}
+      {action === 'import_model' && <label>AIMET encodings path (optional)<input name="encodings" placeholder="model.encodings"/></label>}
+      {action === 'import_profile' && <>
+        <label>Trace format<select name="format" value={traceFormat} onChange={e => setTraceFormat(e.target.value)}><option value="ort-chrome-v1">ORT Chrome Trace</option><option value="optrace-chrome-v1">Optrace converted Chrome Trace</option><option value="qnn-linting-chrome-v2.50">QAIRT 2.50 HTP Linting Trace</option><option value="qnn-optrace-chrome-v2.50">QAIRT 2.50 HTP Optrace</option></select></label>
+        {traceFormat === 'qnn-optrace-chrome-v2.50' ?
+          <label>DLC framework trace CSV (optional)<input name="framework_csv" placeholder="compiled-graph.csv"/></label> :
+          <label>Operation mapping path (optional)<input name="mapping_file" placeholder="mapping.json"/></label>}
+        <label className="checkbox"><input type="checkbox" name="fixture"/> Fixture data</label>
+      </>}
+      {action === 'run_ort_profile' && <label>Input NPZ path relative to runs/inbox<input name="inputs" required placeholder="inputs.npz"/></label>}
+      {action === 'compare_experiments' && <>
+        {(['baseline','candidate'] as const).map(key => <label key={key}>{key === 'baseline' ? 'Baseline' : 'Candidate'}<select name={key} required defaultValue={key === 'baseline' ? profileId : undefined}>
+          {catalog.profiles.map(p => <option key={p.id} value={p.id}>{optionLabel(p.model_id)} · {p.id.slice(-8)}</option>)}
+        </select></label>)}
+        <label>Hypothesis (optional)<input name="hypothesis"/></label>
+      </>}
+      {status && <p role="alert" className="error">{status}</p>}
+      <button className="action primary" type="submit" disabled={busy}>{busy ? 'Working…' : 'Run action'}<ArrowRight size={15}/></button>
+    </form>
+  </div></div>;
+}
+
+function App() {
+  const [query, setQuery] = useState(readQuery);
+  const [revision, setRevision] = useState(0);
+  const [dialog, setDialog] = useState(false);
+  useEffect(() => {
+    const handler = () => setQuery(readQuery());
+    window.addEventListener('popstate', handler);
+    return () => window.removeEventListener('popstate', handler);
+  }, []);
+  function go(update: Partial<Query>) {
+    const next = {...query, ...update};
+    const params = new URLSearchParams();
+    Object.entries(next).forEach(([key,value]) => {if (value) params.set(key, value);});
+    history.pushState({}, '', '/?' + params);
+    setQuery(next);
+  }
+  const catalogRequest = useData<Catalog>('/catalog?revision=' + revision);
+  const catalog = catalogRequest?.value;
+  const experiment = catalog?.experiments.find(e => e.id === query.experiment) ?? (query.experiment ? undefined : catalog?.experiments[0]);
+  const defaultProfile = catalog?.profiles.find(p => p.id === experiment?.baseline) ?? catalog?.profiles[0];
+  const chosenProfile = query.profile ? catalog?.profiles.find(p => p.id === query.profile) :
+    query.model ? catalog?.profiles.find(p => p.model_id === query.model) : defaultProfile;
+  const modelId = query.model ?? chosenProfile?.model_id ?? catalog?.models.find(m => m.format === 'ONNX')?.id;
+  const profileId = query.profile ?? chosenProfile?.id;
+  const model = catalog?.models.find(m => m.id === modelId);
+  const comparison = query.experiment ? experiment : catalog?.experiments.find(row => row.baseline === profileId || row.candidate === profileId);
+  const graphRequest = useData<Graph>(modelId && query.view === 'graph' ? '/models/' + modelId + '/graph' : undefined);
+  const profileRequest = useData<Profile>(profileId ? '/profiles/' + profileId : undefined);
+  const nodeRequest = useData<{hotspots:Hotspot[]}>(profileId && (query.view === 'graph' || (query.view === 'diagnosis' && query.level === 'node')) ? '/profiles/' + profileId + '/hotspots?level=node&limit=' + (query.view === 'graph' ? '10000' : '12') : undefined);
+  const moduleRequest = useData<{hotspots:Hotspot[]}>(profileId && query.view !== 'timeline' ? '/profiles/' + profileId + '/hotspots?level=module&limit=12' : undefined);
+  const graph = graphRequest?.value;
+  const profile = profileRequest?.value;
+  const modelChoices = useMemo(() => catalog?.models.filter(item => item.format === 'ONNX') ?? [], [catalog]);
+  const error = catalogRequest?.error || graphRequest?.error || profileRequest?.error || nodeRequest?.error || moduleRequest?.error;
+  return <div className="shell">
+    <aside className="sidebar">
+      <div className="brand"><div><CircuitBoard size={23}/></div><span>HTP Insight<small>Runtime diagnostics</small></span></div>
+      <nav aria-label="Analysis views">
+        <button aria-current={query.view === 'graph' ? 'page' : undefined} onClick={() => go({view:'graph'})}><Workflow size={17}/>Graph Explorer</button>
+        <button aria-current={query.view === 'timeline' ? 'page' : undefined} onClick={() => go({view:'timeline'})}><Activity size={17}/>Profile Timeline</button>
+        <button aria-current={query.view === 'diagnosis' ? 'page' : undefined} onClick={() => go({view:'diagnosis'})}><GitFork size={17}/>Diagnosis & Comparison</button>
+      </nav>
+      <div className="sidebar-foot"><Cpu size={17}/><span>Local workspace<small>ONNX Runtime · CPU</small></span></div>
+    </aside>
+    <main>
+      <header className="top"><div><span className="crumb">Workspace <span>/</span> {views[query.view]}</span><h1>{views[query.view]}</h1></div>
+        <button className="action import" disabled={!catalog} onClick={() => setDialog(true)}><FileJson size={15}/> Manage evidence</button></header>
+      <div className="context">
+        {query.view === 'diagnosis' && !!catalog?.experiments.length && <label>Experiment<select value={comparison?.id ?? ''} onChange={e => {
+          const selected = catalog.experiments.find(item => item.id === e.target.value);
+          if (selected) go({experiment:selected.id, profile:selected.baseline, model:undefined, hotspot:undefined, node:undefined, event:undefined});
+        }}>
+          {!comparison && <option value="" disabled>Select an experiment</option>}
+          {catalog.experiments.map(e => <option key={e.id} value={e.id}>{e.id.slice(-8)} · {catalog.models.find(m => m.id === catalog.profiles.find(p => p.id === e.baseline)?.model_id)?.name ?? 'Experiment'}</option>)}
+        </select></label>}
+        {query.view !== 'diagnosis' && !!modelChoices.length && <label>Model<select value={model?.id ?? ''} onChange={e => go({model:e.target.value,profile:undefined,node:undefined,event:undefined,hotspot:undefined})}>
+          {modelChoices.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+        </select></label>}
+        {!!catalog?.profiles.length && <label>Profile<select value={profileId ?? ''} onChange={e => go({profile:e.target.value || undefined, model:undefined, node:undefined,event:undefined,hotspot:undefined})}>
+          {!profileId && <option value="">No profile</option>}
+          {catalog.profiles.filter(item => query.view !== 'graph' || item.model_id === modelId).map(item => <option key={item.id} value={item.id}>
+            {query.view !== 'graph' && (catalog.models.find(m => m.id === item.model_id)?.name + ' · ')}{item.source} · {item.id.slice(-8)}
+          </option>)}
+        </select></label>}
+        {chosenProfile && <span className={'status ' + (chosenProfile.provenance === 'fixture' ? 'fixture' : '')}><i/>{chosenProfile.source} · {chosenProfile.backend ?? 'Backend unknown'} · {chosenProfile.provenance}</span>}
+      </div>
+      {error && <p className="error" role="alert">{error}</p>}
+      {query.view === 'graph' && graph && <GraphView key={graph.artifact.id} graph={graph} profile={profile} query={query} go={go}
+        nodeRanks={nodeRequest?.value?.hotspots ?? []} moduleRanks={moduleRequest?.value?.hotspots ?? []}/>}
+      {query.view === 'timeline' && profile && <Timeline key={profile.id} profile={profile} query={query} go={go}/>}
+      {query.view === 'diagnosis' && catalog && <Diagnosis profile={profile} query={query} experiment={comparison} go={go}
+        hotspots={(query.level === 'node' ? nodeRequest : moduleRequest)?.value?.hotspots ?? []}/>}
+      {!error && (query.view === 'graph' && !graph || query.view === 'timeline' && !profile) &&
+        <Panel title="Evidence"><p className="detail quiet">{!catalog || (query.view === 'graph' ? modelId : profileId) ? 'Loading evidence…' : 'Run make demo or import evidence to begin.'}</p></Panel>}
+    </main>
+    {dialog && catalog && <ImportDialog catalog={catalog} modelId={modelId} profileId={profileId} close={() => setDialog(false)}
+      done={update => {setRevision(revision + 1); go({node:undefined, event:undefined, hotspot:undefined, ...update});}}/>}
+  </div>;
+}
+
+createRoot(document.getElementById('root')!).render(<App/>);

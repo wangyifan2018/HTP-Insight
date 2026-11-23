@@ -1,0 +1,8 @@
+{
+  "traceEvents": [
+    {"name": "thread_name", "ph": "M", "pid": 1, "tid": 4, "args": {"name": "Fixture lane"}},
+    {"name": "fixture_operation_A", "cat": "fixture", "ph": "X", "pid": 1, "tid": 4, "ts": 100, "dur": 9},
+    {"name": "fixture_operation_B", "cat": "fixture", "ph": "X", "pid": 1, "tid": 4, "ts": 112, "dur": 3},
+    {"name": "fixture_unmapped", "cat": "fixture", "ph": "X", "pid": 1, "tid": 5, "ts": 119, "dur": 2}
+  ]
+}

@@ -1,0 +1,119 @@
+{
+  "traceEvents": [
+    {
+      "name": "Wait",
+      "pid": 0,
+      "tid": "Foreground",
+      "ph": "X",
+      "ts": 0,
+      "dur": 3619,
+      "cname": "grey",
+      "args": {
+        "Duration": 3619
+      }
+    },
+    {
+      "name": "node_div:OpId_20 , n4_4:OpId_89 , n4:OpId_32 , node_sub:OpId_17 ",
+      "pid": 0,
+      "tid": "Background",
+      "ph": "X",
+      "ts": 0,
+      "dur": 1990,
+      "args": {
+        "Duration": 1990
+      }
+    },
+    {
+      "name": "node_sub:OpId_17 (cycles)",
+      "pid": 0,
+      "tid": "Foreground",
+      "ph": "X",
+      "ts": 3619,
+      "dur": 153248,
+      "args": {
+        "Duration": 153248,
+        "Resources": "HVX, DMA"
+      }
+    },
+    {
+      "name": "node_div:OpId_20 , n4_4:OpId_89 , n4:OpId_32 , node_sub:OpId_17 ",
+      "pid": 0,
+      "tid": "Background",
+      "ph": "X",
+      "ts": 3619,
+      "dur": 137043,
+      "args": {
+        "Duration": 137043
+      }
+    },
+    {
+      "name": "Wait",
+      "pid": 0,
+      "tid": "Foreground",
+      "ph": "X",
+      "ts": 156867,
+      "dur": 482,
+      "cname": "grey",
+      "args": {
+        "Duration": 482
+      }
+    },
+    {
+      "name": "",
+      "pid": 0,
+      "tid": "Background",
+      "ph": "X",
+      "ts": 156867,
+      "dur": 0,
+      "args": {
+        "Duration": 0
+      }
+    },
+    {
+      "name": "OpId_19 (cycles)",
+      "pid": 0,
+      "tid": "Foreground",
+      "ph": "X",
+      "ts": 157349,
+      "dur": 3032,
+      "args": {
+        "Duration": 3032,
+        "Resources": "HVX, DMA"
+      }
+    },
+    {
+      "name": "",
+      "pid": 0,
+      "tid": "Background",
+      "ph": "X",
+      "ts": 157349,
+      "dur": 0,
+      "args": {
+        "Duration": 0
+      }
+    },
+    {
+      "name": "node_div:OpId_20 (cycles)",
+      "pid": 0,
+      "tid": "Foreground",
+      "ph": "X",
+      "ts": 160381,
+      "dur": 106148,
+      "args": {
+        "Duration": 106148,
+        "Resources": "HVX"
+      }
+    },
+    {
+      "name": "n4_4:OpId_89 , node_div:OpId_20 , n4:OpId_32 , node_sub:OpId_17 ",
+      "pid": 0,
+      "tid": "Background",
+      "ph": "X",
+      "ts": 160381,
+      "dur": 105854,
+      "args": {
+        "Duration": 105854
+      }
+    }
+  ]
+}
