@@ -1,0 +1,75 @@
+{
+  "header": {
+    "header_version": {
+      "major": 1,
+      "minor": 0,
+      "patch": 0
+    },
+    "version": {
+      "major": 1,
+      "minor": 0,
+      "patch": 0
+    },
+    "artifact_type": "HTP_GRAPH"
+  },
+  "graph": {
+    "nodes": {
+      "0x0000453e00000036": {
+        "type": "q::ConvLayer.opt.weights_to_vtcm",
+        "grouping": "/attention/MatMul",
+        "tensor_params": {},
+        "scalar_params": {
+          "output_step_size": {
+            "562": 0.000695699
+          },
+          "output_zero_offset": {
+            "50": 0
+          },
+          "output_rank": {
+            "50": 4
+          },
+          "qnn_op_type": {
+            "1544": "MatMul"
+          },
+          "qnn_op_name": {
+            "1544": "/attention/MatMul"
+          },
+          "mem_dram_read": {
+            "100": 4096
+          },
+          "mem_dram_write": {
+            "100": 0
+          },
+          "mem_vtcm_read": {
+            "100": 0
+          },
+          "mem_vtcm_write": {
+            "100": 4096
+          },
+          "cycles_start": {
+            "100": 25432491530517
+          },
+          "cycles_duration": {
+            "100": 2583
+          },
+          "cycles_dominant": {
+            "100": 2583
+          },
+          "cycles_per_packet": {
+            "100": 45.3158
+          },
+          "op_flags": {
+            "1544": "dma"
+          }
+        },
+        "input_names": [
+          "0x0000471a00000036"
+        ],
+        "output_names": [
+          "0x0000453e00000036"
+        ]
+      }
+    },
+    "tensors": {}
+  }
+}

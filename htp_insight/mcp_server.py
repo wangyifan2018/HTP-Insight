@@ -14,6 +14,8 @@ def build_server():
         "run_ort_profile": "Run a bounded local ORT CPU benchmark using a registered model and inbox NPZ.",
         "get_hotspots": "Rank nodes or modules by operation trace duration. Includes evidence IDs and deep links.",
         "explain_hotspot": "Return graph tensors, quantization, raw evidence and a falsifiable hypothesis.",
+        "import_evidence": "Attach QAIRT QHAS 1.0 or HTP Graph 1.0 JSON to a registered profile.",
+        "profile_evidence": "List QHAS and HTP Graph attachments, optionally matched to an HTP operation ID.",
         "profile_event": "Read a normalized event and its original JSON or CSV record.",
         "suggest_experiments": "Suggest adaptations and verification metrics for the highest-duration modules.",
         "compare_experiments": "Compare two profile IDs and record graph, latency and numerical differences.",

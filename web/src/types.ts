@@ -7,7 +7,15 @@ export interface Quantization { format: string; tensor: string; operation: strin
 export interface Graph { artifact: Artifact; architecture: string; nodes: Node[]; tensors: Record<string, Tensor>; inputs: string[]; outputs: string[]; modules: Module[]; quantization: Quantization[]; initializer_elements: number }
 export interface Evidence { id: string; name: string; start: number | null; duration: number | null; recorded_timestamp_us?: number | null; unit: TimeUnit; backend: string | null; track: string | null; resource: string | null; parent: string | null; operation: string | null; kind: string; raw_index: number }
 export interface ProfileInfo { id: string; model_id: string; source: string; backend: string | null; provenance: string; unit: TimeUnit; raw_format?: "json" | "csv"; profiler_version: string | null; conditions: Record<string, unknown>; latency_us: {p50: number; p95: number} | null; raw_trace: string; event_count: number }
-export interface Profile extends ProfileInfo { events: Evidence[]; mappings: {node_ids: string[]; operation_ids: string[]; method: string; evidence?: {method: string; qnn_op_name: string; source_onnx_names: string[]; framework_csv_sha256: string} | null}[] }
+export interface EvidenceArtifact {
+  id: string; artifact_type: "HTP_GRAPH" | "QHAS"; filename: string; provenance: string; raw: string;
+  summary: {
+    node_count?: number; tensor_count?: number; operation_count?: number;
+    resources?: {type: string | null; utilization: number | null; cycles_used: number | null}[];
+  };
+  operation_records?: Record<string, unknown>[];
+}
+export interface Profile extends ProfileInfo { evidence?: EvidenceArtifact[]; events: Evidence[]; mappings: {node_ids: string[]; operation_ids: string[]; method: string; evidence?: {method: string; qnn_op_name: string; source_onnx_names: string[]; framework_csv_sha256: string} | null}[] }
 export interface Hotspot { id: string; module: string; label: string; node_ids: string[]; total_us: number | null; total_cycles: number | null; unit: TimeUnit; share: number | null; scope: string; calls: number; evidence_ids: string[] }
 export interface Explanation extends Hotspot { example_evidence: Evidence; raw_trace: string; hypothesis: {mechanism: string; adaptation: string; risk: string; metrics: string[]} }
 interface Metric { baseline: number | null; candidate: number | null; delta_pct: number | null }

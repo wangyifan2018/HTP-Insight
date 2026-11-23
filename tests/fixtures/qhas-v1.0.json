@@ -1,0 +1,129 @@
+{
+  "header": {
+    "header_version": {
+      "major": 1,
+      "minor": 0,
+      "patch": 0
+    },
+    "version": {
+      "major": 1,
+      "minor": 0,
+      "patch": 0
+    },
+    "artifact_type": "QHAS"
+  },
+  "model_id": "aimet_w8a16",
+  "data": {
+    "htp_overall_summary": {
+      "data": [
+        {
+          "htp_resources": {
+            "data": [
+              {
+                "type": "HMX",
+                "tid": 256,
+                "start_cycle": 25432491519208,
+                "end_cycle": 25432491692195,
+                "timeline_cycles": 172987,
+                "cycles_used": 57094,
+                "utilization": 33.004792267627046,
+                "dram_read": 186368,
+                "dram_write": 0,
+                "vtcm_read": 661504,
+                "vtcm_write": 411648
+              },
+              {
+                "type": "HVX",
+                "tid": 512,
+                "start_cycle": 25432491577365,
+                "end_cycle": 25432491682060,
+                "timeline_cycles": 104695,
+                "cycles_used": 84182,
+                "utilization": 48.663772422205135,
+                "dram_read": 0,
+                "dram_write": 0,
+                "vtcm_read": 206848,
+                "vtcm_write": 167936
+              },
+              {
+                "type": "HVX",
+                "tid": 513,
+                "start_cycle": 25432491547834,
+                "end_cycle": 25432491692131,
+                "timeline_cycles": 144297,
+                "cycles_used": 107983,
+                "utilization": 62.422609791487226,
+                "dram_read": 0,
+                "dram_write": 1536,
+                "vtcm_read": 321536,
+                "vtcm_write": 223232
+              }
+            ]
+          },
+          "htp": 0,
+          "percent_idle": 3.392740494950488,
+          "percent_utilization": 96.60725950504951,
+          "time_us": 1343,
+          "graph_execute_us": 260,
+          "inf_per_s": 744.6016381236038,
+          "timeline_cycles": 172987,
+          "total_dram_read": 186368,
+          "total_dram_write": 1536,
+          "total_dram": 187904,
+          "peak_vtcm_alloc": 245760,
+          "total_vtcm_read": 1189888,
+          "total_vtcm_write": 802816,
+          "total_vtcm": 1992704,
+          "unique_qnn_ops": 10,
+          "qnn_nodes": 17,
+          "unique_htp_ops": 19,
+          "htp_nodes": 164,
+          "mac_estimate_whole_graph": 163392
+        }
+      ]
+    },
+    "htp_op_instances": {
+      "data": [
+        {
+          "htp": 0,
+          "tid": 256,
+          "op_id": "0x453e00000036",
+          "htp_op": "q::ConvLayer.opt.weights_to_vtcm",
+          "qnn_op": "/attention/MatMul",
+          "qnn_op_type": "MatMul",
+          "dtype": "QInt8",
+          "rank": 4,
+          "step_size": 0.0006956992438063025,
+          "zero_offset": 0,
+          "dims": [
+            1,
+            1,
+            128,
+            32
+          ],
+          "input_nodes": [
+            "0x471a00000036"
+          ],
+          "start_cycle": 25432491530517,
+          "cycles": 2583,
+          "num_dominant_path_cycles": 2583,
+          "percent_dominant_path_cycles": 1.5456144759989947,
+          "cycles_per_packet": 45.31578826904297,
+          "fmt_change": false,
+          "ref_op": false,
+          "hmx": false,
+          "hvx": false,
+          "hlx": false,
+          "dma_wait": false,
+          "dma_set": false,
+          "dma": true,
+          "sync": false,
+          "dram_read": 4096,
+          "dram_write": 0,
+          "vtcm_read": 0,
+          "vtcm_write": 4096
+        }
+      ]
+    }
+  }
+}

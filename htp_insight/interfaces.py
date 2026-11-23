@@ -2,7 +2,7 @@ from .core import Core
 
 OPERATIONS = (
     "import_model", "inspect_graph", "import_profile", "run_ort_profile", "get_hotspots",
-    "explain_hotspot", "profile_event", "suggest_experiments", "compare_experiments",
+    "explain_hotspot", "profile_event", "import_evidence", "profile_evidence", "suggest_experiments", "compare_experiments",
 )
 
 

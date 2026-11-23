@@ -64,6 +64,19 @@ def raw_event(profile_id: str, event_id: str):
     return call(core.profile_event, profile_id, event_id)
 
 
+@app.get("/api/profiles/{profile_id}/evidence")
+def profile_evidence(profile_id: str, operation_id: str | None = None):
+    return call(core.profile_evidence, profile_id, operation_id)
+
+
+@app.get("/api/profiles/{profile_id}/evidence/{evidence_id}/raw")
+def raw_evidence(profile_id: str, evidence_id: str):
+    path = call(core.evidence_path, profile_id, evidence_id) / "raw.json"
+    if not path.is_file():
+        raise HTTPException(404, "Attachment unavailable")
+    return FileResponse(path, media_type="application/json", filename=f"{evidence_id}.json")
+
+
 @app.get("/api/experiments/{experiment_id}")
 def experiment(experiment_id: str, format: str | None = None):
     if format == "md":

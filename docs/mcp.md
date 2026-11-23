@@ -39,3 +39,5 @@
 在 Claude Code 中可让它用 `get_hotspots` 定位 Baseline 的 Attention，调用 `explain_hotspot` 核对证据，然后用 `compare_experiments` 对比实验两侧，并引用返回的 Web 链接。Profile ID 可从 `runs/demo.json` 获取。
 
 QAIRT 2.50 的 `qnn-viewer-csv-v2.50` 接受 `qnn-profile-viewer` 输出的 Basic / Detailed CSV。单图执行可计算 NetRun p50/p95，导入时可用 `conditions.warmup` 指定丢弃的前置次数。Detailed 算子以 cycles 排名，CSV 消息时间戳保持原始语义。使用 `profile_event` 获取规范化事件及原始行。
+
+用 `import_evidence` 将真实 `qhas-v1.0` 或 `htp-graph-v1.0` JSON 附加到对应 Optrace Profile。随后 `profile_evidence` 可按 Profile ID 列出所有附件，或传入 HTP `operation_id` 定位拓扑和 QHAS 操作记录。`profile_event` 和 `explain_hotspot` 也返回能按 ID 关联的证据，含原文件的下载地址与 SHA-256。

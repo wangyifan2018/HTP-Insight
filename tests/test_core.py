@@ -203,3 +203,24 @@ def test_qnn_viewer_csv_preserves_raw_records_and_units(local):
     assert core.profile_event(result["id"], event["id"])["raw"][2:4] == ["405061", "CYCLES"]
     assert core.get_hotspots(result["id"], level="node")["hotspots"][0]["total_us"] is None
     assert core.item(result["id"], "trace.csv").read_bytes() == filename.read_bytes()
+
+
+def test_device_artifact_joins_normalized_htp_operation_id(local):
+    core, model_id = local
+    trace = Path("tests/fixtures/qnn-optrace-2.50.json")
+    (core.inbox / trace.name).write_bytes(trace.read_bytes())
+    profile = core.import_profile(model_id, trace.name, "qnn-optrace-chrome-v2.50", fixture=True)
+    pid = profile["id"]
+    for format in ("qhas-v1.0", "htp-graph-v1.0"):
+        filename = Path("tests/fixtures") / (format + ".json")
+        (core.inbox / filename.name).write_bytes(filename.read_bytes())
+        evidence = core.import_evidence(pid, filename.name, format, "fixture")
+        assert core.import_evidence(pid, filename.name, format, "fixture")["id"] == evidence["id"]
+        assert (core.evidence_path(pid, evidence["id"]) / "raw.json").read_bytes() == filename.read_bytes()
+    event = core.profile(pid)["events"][0]
+    related = core.profile_event(pid, event["id"])["related_evidence"]
+    assert {item["artifact_type"] for item in related} == {"QHAS", "HTP_GRAPH"}
+    assert all(item["operation_records"] for item in related)
+    assert core.profile_evidence(pid, "0xFFFF")["artifacts"] == []
+    with pytest.raises(ValueError, match="Expected QAIRT"):
+        core.import_evidence(pid, "qhas-v1.0.json", "htp-graph-v1.0")

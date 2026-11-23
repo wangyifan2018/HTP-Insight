@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Activity, ArrowDownToLine, ArrowRight, Box, ChevronDown, CircuitBoard, Clock3, Cpu, FileJson, GitFork, Layers3, ScanLine, Search, Workflow } from 'lucide-react';
-import type { Catalog, Evidence, Experiment, Explanation, Graph, Hotspot, Node, Profile, TimeUnit } from './types';
+import type { Catalog, Evidence, EvidenceArtifact, Experiment, Explanation, Graph, Hotspot, Node, Profile, TimeUnit } from './types';
 import './style.css';
 
 const views = { graph: 'Graph Explorer', timeline: 'Profile Timeline', diagnosis: 'Diagnosis & Comparison' } as const;
@@ -167,6 +167,19 @@ function GraphView({graph, query, profile, nodeRanks, moduleRanks, go}: {graph: 
   </>;
 }
 
+function EvidenceFiles({items}: {items?: EvidenceArtifact[]}) {
+  if (!items?.length) return null;
+  return <div className="attached-evidence">{items.map(item => <div key={item.id} className="tensor">
+    <a className="action" href={item.raw} title={item.filename}><ArrowDownToLine size={13}/>{item.artifact_type === 'HTP_GRAPH' ? 'HTP Graph JSON' : 'QHAS JSON'}</a>
+    <span>{item.provenance}{item.summary.node_count != null && ` · ${item.summary.node_count} nodes · ${item.summary.tensor_count ?? '—'} tensors`}
+      {item.summary.operation_count != null && ` · ${item.summary.operation_count} records`}</span>
+    {item.summary.resources?.map((resource, index) => <span key={index}>
+      {resource.type ?? 'Resource'} · {resource.utilization == null ? 'Utilization unavailable' : resource.utilization.toFixed(1) + '% utilization'}
+    </span>)}
+    {item.operation_records && <details><summary>Matched HTP operation</summary><pre>{JSON.stringify(item.operation_records, null, 2)}</pre></details>}
+  </div>)}</div>;
+}
+
 function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q: Partial<Query>) => void}) {
   const [runId, setRun] = useState<string>();
   const timed = profile.events.filter((event): event is Evidence & {start:number; duration:number} =>
@@ -193,7 +206,7 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
   const min = run?.start ?? shown[0]?.start ?? 0;
   const max = run ? run.start + run.duration : Math.max(min + 1, ...shown.map(row => row.start + row.duration));
   const range = Math.max(1, max - min);
-  const raw = useData<{raw: unknown}>(reference ? '/profiles/' + profile.id + '/events/' + reference.id : undefined);
+  const raw = useData<{raw: unknown; related_evidence: EvidenceArtifact[]}>(reference ? '/profiles/' + profile.id + '/events/' + reference.id : undefined);
   const tracks = new Map<string, typeof timed>();
   for (const row of shown) {
     const track = row.track || row.resource || 'Unspecified';
@@ -244,10 +257,14 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
               <dt>Source ONNX</dt><dd className="break">{proof.source_onnx_names.join(', ')}</dd>
               <dt>Framework CSV SHA-256</dt><dd className="break">{proof.framework_csv_sha256}</dd></dl></details>}
           {ids.map(id => <button className="action wide" key={id} onClick={() => go({view:'graph', node:id})}>Locate {id} in graph <ArrowRight size={15}/></button>)}
+          <EvidenceFiles items={raw?.value?.related_evidence}/>
           <details><summary>Original event</summary><code className="break">{reference.id}</code><pre>{JSON.stringify(raw?.value?.raw, null, 2)}</pre></details>
         </div>}
       </Panel>
     </div>
+    {!!profile.evidence?.length && <div className="profile-attachments"><Panel title="QAIRT artifacts" icon={<FileJson size={15}/>}>
+      <div className="detail"><EvidenceFiles items={profile.evidence}/></div>
+    </Panel></div>}
   </>;
 }
 
@@ -345,7 +362,7 @@ function Diagnosis({profile, experiment, hotspots, query, go}: {profile?: Profil
   </div>;
 }
 
-type Action = 'import_model' | 'import_profile' | 'run_ort_profile' | 'compare_experiments';
+type Action = 'import_model' | 'import_profile' | 'import_evidence' | 'run_ort_profile' | 'compare_experiments';
 
 function ImportDialog({catalog, modelId, profileId, close, done}: {catalog: Catalog; modelId?: string; profileId?: string; close:()=>void; done:(q:Partial<Query>)=>void}) {
   const [action, setAction] = useState<Action>('import_profile');
@@ -361,10 +378,11 @@ function ImportDialog({catalog, modelId, profileId, close, done}: {catalog: Cata
     setBusy(true);
     setStatus('');
     try {
-      const result = await api<{id?:string; model_id?:string; artifact?:{id:string}}>('/tools/' + action, {
+      const result = await api<{id?:string; profile_id?:string; model_id?:string; artifact?:{id:string}}>('/tools/' + action, {
         method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
       });
       if (action === 'import_model') done({view:'graph', model:result.artifact?.id, profile:undefined});
+      else if (action === 'import_evidence') done({view:'timeline', profile:result.profile_id, model:undefined});
       else if (action === 'compare_experiments') done({view:'diagnosis', experiment:result.id, profile:String(args.baseline), model:undefined});
       else done({view:'timeline', profile:result.id, model:result.model_id});
       close();
@@ -379,13 +397,13 @@ function ImportDialog({catalog, modelId, profileId, close, done}: {catalog: Cata
     <div className="panel-head"><div><FileJson size={16}/> Manage local evidence</div><button className="action" onClick={close}>Close</button></div>
     <form className="detail" onSubmit={submit}>
       <label>Action<select value={action} onChange={e => setAction(e.target.value as Action)}>
-        <option value="import_profile">Import a profile trace</option><option value="import_model">Import an ONNX model</option>
+        <option value="import_profile">Import a profile trace</option><option value="import_evidence">Attach QHAS or HTP Graph</option><option value="import_model">Import an ONNX model</option>
         <option value="run_ort_profile">Run ORT CPU profiling</option><option value="compare_experiments">Compare two profiles</option>
       </select></label>
       {(action === 'import_profile' || action === 'run_ort_profile') && <label>Model<select required name="model_id" defaultValue={modelId}>
         {catalog.models.filter(x => x.format === 'ONNX').map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
       </select></label>}
-      {(action === 'import_model' || action === 'import_profile') && <label>Path relative to runs/inbox<input key={action} name="filename" required placeholder={action === 'import_model' ? 'model.onnx' : traceFormat === 'qnn-viewer-csv-v2.50' ? 'profile.csv' : 'profile.json'}/></label>}
+      {(action === 'import_model' || action === 'import_profile' || action === 'import_evidence') && <label>Path relative to runs/inbox<input key={action} name="filename" required placeholder={action === 'import_model' ? 'model.onnx' : traceFormat === 'qnn-viewer-csv-v2.50' ? 'profile.csv' : 'profile.json'}/></label>}
       {action === 'import_model' && <label>AIMET encodings path (optional)<input name="encodings" placeholder="model.encodings"/></label>}
       {action === 'import_profile' && <>
         <label>Trace format<select name="format" value={traceFormat} onChange={e => setTraceFormat(e.target.value)}><option value="ort-chrome-v1">ORT Chrome Trace</option><option value="qnn-viewer-csv-v2.50">QAIRT 2.50 Basic / Detailed CSV</option><option value="optrace-chrome-v1">Optrace converted Chrome Trace</option><option value="qnn-linting-chrome-v2.50">QAIRT 2.50 HTP Linting Trace</option><option value="qnn-optrace-chrome-v2.50">QAIRT 2.50 HTP Optrace</option></select></label>
@@ -393,6 +411,15 @@ function ImportDialog({catalog, modelId, profileId, close, done}: {catalog: Cata
           <label>DLC framework trace CSV (optional)<input name="framework_csv" placeholder="compiled-graph.csv"/></label> :
           <label>Operation mapping path (optional)<input name="mapping_file" placeholder="mapping.json"/></label>}
         <label className="checkbox"><input type="checkbox" name="fixture"/> Fixture data</label>
+      </>}
+      {action === 'import_evidence' && <>
+        <label>Profile<select name="profile_id" required defaultValue={profileId}>
+          {catalog.profiles.map(p => <option key={p.id} value={p.id}>{optionLabel(p.model_id)} · {p.id.slice(-8)}</option>)}
+        </select></label>
+        <label>Artifact format<select name="format"><option value="qhas-v1.0">QAIRT QHAS 1.0</option>
+          <option value="htp-graph-v1.0">QAIRT HTP Graph 1.0</option></select></label>
+        <label>Provenance<select name="provenance"><option value="imported">Imported</option>
+          <option value="estimated">Estimated</option><option value="fixture">Fixture</option></select></label>
       </>}
       {action === 'run_ort_profile' && <label>Input NPZ path relative to runs/inbox<input name="inputs" required placeholder="inputs.npz"/></label>}
       {action === 'compare_experiments' && <>

@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 
 import numpy as np
 
-from . import analysis, graph, profiles, qnn
+from . import analysis, graph, profiles, qnn, qnn_evidence
 from .qnn_csv import csv_rows
 from .schema import ExperimentResult, Graph, ModelArtifact, NodeMapping, ProfileSession
 
@@ -174,7 +174,48 @@ class Core:
     def profile(self, profile_id):
         session = self.session(profile_id)
         return {**self.profile_summary(session), "events": [event.model_dump() for event in session.events],
-                "mappings": [item.model_dump() for item in session.mappings]}
+                "mappings": [item.model_dump() for item in session.mappings],
+                "evidence": self.profile_evidence(profile_id)["artifacts"]}
+
+    def import_evidence(self, profile_id: str, filename: str, format: str,
+                        provenance: str = "imported") -> dict[str, Any]:
+        self.session(profile_id)
+        if provenance not in {"imported", "measured", "estimated", "fixture"}:
+            raise ValueError("Evidence provenance must be imported, measured, estimated or fixture")
+        raw = self.inbox_path(filename, {".json"}).read_bytes()
+        specification, operations = qnn_evidence.parse_evidence(json.loads(raw), format)
+        sha = digest(raw)
+        identifier = "evidence-" + digest(encode([profile_id, format, provenance, sha]))[:24]
+        directory = self.evidence_path(profile_id, identifier)
+        metadata = {
+            "id": identifier, "profile_id": profile_id, "format": format, "provenance": provenance,
+            "sha256": sha, "filename": Path(filename).name, **specification,
+            "raw": f"/api/profiles/{profile_id}/evidence/{identifier}/raw",
+            "deep_link": self.link("timeline", profile=profile_id),
+        }
+        atomic_write(directory / "raw.json", raw)
+        atomic_write(directory / "operations.json", encode(operations))
+        atomic_write(directory / "index.json", encode(metadata))
+        return metadata
+
+    def evidence_path(self, profile_id, evidence_id):
+        if not re.fullmatch(r"evidence-[a-f0-9]{24}", evidence_id):
+            raise ValueError("Invalid attachment evidence ID")
+        return self.item(profile_id, "evidence") / evidence_id
+
+    def profile_evidence(self, profile_id: str, operation_id: str | None = None) -> dict[str, Any]:
+        self.session(profile_id)
+        identifier = qnn_evidence.native_id(operation_id)
+        artifacts = []
+        for index in sorted(self.item(profile_id, "evidence").glob("evidence-*/index.json")):
+            record = json.loads(index.read_bytes())
+            if identifier is not None:
+                rows = json.loads((index.parent / "operations.json").read_bytes()).get(identifier)
+                if rows:
+                    artifacts.append({**record, "operation_records": rows})
+            elif operation_id is None:
+                artifacts.append(record)
+        return {"profile_id": profile_id, "operation_id": operation_id, "artifacts": artifacts}
 
     def profile_event(self, profile_id: str, event_id: str) -> dict[str, Any]:
         session = self.session(profile_id)
@@ -186,7 +227,8 @@ class Core:
         else:
             document = self.read(profile_id, "trace.json")
             rows = document["traceEvents"] if isinstance(document, dict) else document
-        return {"event": event.model_dump(), "raw": rows[event.raw_index]}
+        return {"event": event.model_dump(), "raw": rows[event.raw_index],
+                "related_evidence": self.profile_evidence(profile_id, event.operation)["artifacts"] if event.operation else []}
 
     def get_hotspots(self, profile_id: str, level: str = "module", limit: int = 10) -> dict[str, Any]:
         if not 1 <= limit <= 10000:
@@ -227,7 +269,9 @@ class Core:
             **hotspot.model_dump(), "mapping_proof": mapping_proof, "source": session.source, "backend": session.backend, "provenance": session.provenance,
             "nodes": [{**node.model_dump(), "output_tensors": [model.tensors[t].model_dump() for t in node.outputs if t],
                        "quantization_details": [model.quantization[i].model_dump() for i in node.quantization]} for node in nodes],
-            "example_evidence": first_event.model_dump(), "raw_trace": f"/api/profiles/{profile_id}/raw",
+            "example_evidence": first_event.model_dump(),
+            "related_evidence": self.profile_evidence(profile_id, first_event.operation)["artifacts"] if first_event.operation else [],
+            "raw_trace": f"/api/profiles/{profile_id}/raw",
             "hypothesis": suggestion.model_dump(),
             "deep_link": self.link("timeline", profile=profile_id, event=first_event.id),
         }
