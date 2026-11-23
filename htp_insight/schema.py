@@ -80,6 +80,7 @@ class ProfileEvent(BaseModel):
     kind: str
     start: float | None = None
     duration: float | None = None
+    recorded_timestamp_us: int | None = None
     unit: TimeUnit = "us"
     parent: str | None = None
     track: str | None = None
@@ -106,6 +107,7 @@ class ProfileSession(BaseModel):
     events: list[ProfileEvent]
     mappings: list[NodeMapping]
     unit: TimeUnit = "us"
+    raw_format: Literal["json", "csv"] = "json"
     latency_us: dict | None = None
 
 

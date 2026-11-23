@@ -8,6 +8,8 @@ OPTRACE_SCOPE = "Sum of unique measured HTP operation cycles (includes Unknown a
 
 
 def timing_scope(session):
+    if session.raw_format == "csv" and session.unit == "cycles":
+        return "Sum of EXECUTE/BACKEND/SUB-EVENT cycles in QAIRT Detailed CSV (includes Unknown)"
     if session.unit == "cycles":
         return OPTRACE_SCOPE if session.source == "Optrace" else CYCLE_SCOPE
     return SCOPE

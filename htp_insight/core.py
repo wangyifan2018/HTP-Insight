@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 import numpy as np
 
 from . import analysis, graph, profiles, qnn
+from .qnn_csv import csv_rows
 from .schema import ExperimentResult, Graph, ModelArtifact, NodeMapping, ProfileSession
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,7 +115,7 @@ class Core:
         session = ProfileSession(
             id=profile_id, model_id=model_id, source=adapter.source, provenance=provenance, backend=backend,
             profiler_version=profiler_version, device=device or {}, conditions={**(conditions or {}), "adapter": format},
-            events=[], mappings=[], latency_us=latency,
+            events=[], mappings=[], latency_us=latency, raw_format=getattr(adapter, "extension", "json"),
         )
         adapter.parse(raw, session, model)
         if mappings is not None:
@@ -126,7 +127,7 @@ class Core:
                 raise ValueError("Mapping references an unknown operation or graph node")
             overridden = {operation for item in supplied for operation in item.operation_ids}
             session.mappings = supplied + [item for item in session.mappings if not overridden.intersection(item.operation_ids)]
-        atomic_write(self.item(profile_id, "trace.json"), raw)
+        atomic_write(self.item(profile_id, f"trace.{session.raw_format}"), raw)
         if outputs is not None:
             atomic_write(self.item(profile_id, "outputs.npz"), outputs)
         atomic_write(self.item(profile_id, "profile.json"), encode(session.model_dump()))
@@ -142,7 +143,10 @@ class Core:
                        backend: str | None = None, profiler_version: str | None = None,
                        device: dict | None = None, conditions: dict | None = None, mapping_file: str | None = None,
                        framework_csv: str | None = None) -> dict[str, Any]:
-        raw = self.inbox_path(filename, {".json"}).read_bytes()
+        adapter = profiles.ADAPTERS.get(format)
+        if adapter is None:
+            raise ValueError(f"Supported profile formats: {', '.join(profiles.ADAPTERS)}. Other formats are Future Integration.")
+        raw = self.inbox_path(filename, {"." + getattr(adapter, "extension", "json")}).read_bytes()
         mapping = json.loads(self.inbox_path(mapping_file, {".json"}).read_bytes()) if mapping_file else None
         if framework_csv:
             if format != "qnn-optrace-chrome-v2.50" or mapping is not None:
@@ -171,6 +175,18 @@ class Core:
         session = self.session(profile_id)
         return {**self.profile_summary(session), "events": [event.model_dump() for event in session.events],
                 "mappings": [item.model_dump() for item in session.mappings]}
+
+    def profile_event(self, profile_id: str, event_id: str) -> dict[str, Any]:
+        session = self.session(profile_id)
+        event = next((item for item in session.events if item.id == event_id), None)
+        if event is None:
+            raise FileNotFoundError("Event unavailable")
+        if session.raw_format == "csv":
+            rows = csv_rows(self.item(profile_id, "trace.csv").read_bytes())
+        else:
+            document = self.read(profile_id, "trace.json")
+            rows = document["traceEvents"] if isinstance(document, dict) else document
+        return {"event": event.model_dump(), "raw": rows[event.raw_index]}
 
     def get_hotspots(self, profile_id: str, level: str = "module", limit: int = 10) -> dict[str, Any]:
         if not 1 <= limit <= 10000:

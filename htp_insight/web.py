@@ -50,21 +50,18 @@ def explanation(profile_id: str, hotspot_id: str, level: str = "module"):
 
 @app.get("/api/profiles/{profile_id}/raw")
 def raw_trace(profile_id: str):
-    path = call(core.item, profile_id, "trace.json")
+    session = call(core.session, profile_id)
+    extension = session.raw_format
+    path = call(core.item, profile_id, f"trace.{extension}")
     if not path.is_file():
         raise HTTPException(404, "Raw trace unavailable")
-    return FileResponse(path, media_type="application/json", filename=f"{profile_id}.json")
+    return FileResponse(path, media_type="text/csv" if extension == "csv" else "application/json",
+                        filename=f"{profile_id}.{extension}")
 
 
 @app.get("/api/profiles/{profile_id}/events/{event_id}")
 def raw_event(profile_id: str, event_id: str):
-    session = call(core.session, profile_id)
-    event = next((item for item in session.events if item.id == event_id), None)
-    if event is None:
-        raise HTTPException(404, "Event unavailable")
-    document = call(core.read, profile_id, "trace.json")
-    rows = document["traceEvents"] if isinstance(document, dict) else document
-    return {"event": event, "raw": rows[event.raw_index]}
+    return call(core.profile_event, profile_id, event_id)
 
 
 @app.get("/api/experiments/{experiment_id}")

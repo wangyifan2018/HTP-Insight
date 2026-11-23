@@ -12,6 +12,7 @@ from typing import Protocol
 import numpy as np
 import onnxruntime as ort
 
+from .qnn_csv import QnnViewerCsvAdapter
 from .schema import Graph, NodeMapping, ProfileEvent, ProfileSession, Source
 
 
@@ -196,6 +197,7 @@ class QnnOptraceAdapter:
 
 
 ADAPTERS: dict[str, ProfileAdapter] = {
+    "qnn-viewer-csv-v2.50": QnnViewerCsvAdapter(),
     "ort-chrome-v1": ChromeTraceAdapter("ORT"),
     "optrace-chrome-v1": ChromeTraceAdapter("Optrace"),
     "qnn-linting-chrome-v2.50": QnnLintingTraceAdapter(),

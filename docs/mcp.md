@@ -37,3 +37,5 @@
 ```
 
 在 Claude Code 中可让它用 `get_hotspots` 定位 Baseline 的 Attention，调用 `explain_hotspot` 核对证据，然后用 `compare_experiments` 对比实验两侧，并引用返回的 Web 链接。Profile ID 可从 `runs/demo.json` 获取。
+
+QAIRT 2.50 的 `qnn-viewer-csv-v2.50` 接受 `qnn-profile-viewer` 输出的 Basic / Detailed CSV。单图执行可计算 NetRun p50/p95，导入时可用 `conditions.warmup` 指定丢弃的前置次数。Detailed 算子以 cycles 排名，CSV 消息时间戳保持原始语义。使用 `profile_event` 获取规范化事件及原始行。

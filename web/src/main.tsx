@@ -169,7 +169,9 @@ function GraphView({graph, query, profile, nodeRanks, moduleRanks, go}: {graph: 
 
 function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q: Partial<Query>) => void}) {
   const [runId, setRun] = useState<string>();
-  const runs = profile.events.filter(event => event.kind === 'inference');
+  const timed = profile.events.filter((event): event is Evidence & {start:number; duration:number} =>
+    event.start !== null && event.duration !== null);
+  const runs = timed.filter(event => event.kind === 'inference');
   const selected = profile.events.find(event => event.id === query.event);
   const run = runs.find(row => row.id === (selected?.parent ?? runId)) ?? runs[0];
   const mappings = new Map<string, Set<string>>();
@@ -180,7 +182,7 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
       mappings.set(op, ids);
     }
   }
-  const timelineEvents = profile.events.filter(row => row.kind !== 'inference');
+  const timelineEvents = timed.filter(row => row.kind !== 'inference');
   const events = timelineEvents.filter(row => !run || row.parent === run.id);
   const shown = events.length ? events : timelineEvents;
   const reference = selected ?? shown.find(row => mappings.get(row.operation ?? '')?.has(query.node ?? '')) ?? shown[0];
@@ -192,7 +194,7 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
   const max = run ? run.start + run.duration : Math.max(min + 1, ...shown.map(row => row.start + row.duration));
   const range = Math.max(1, max - min);
   const raw = useData<{raw: unknown}>(reference ? '/profiles/' + profile.id + '/events/' + reference.id : undefined);
-  const tracks = new Map<string, Evidence[]>();
+  const tracks = new Map<string, typeof timed>();
   for (const row of shown) {
     const track = row.track || row.resource || 'Unspecified';
     const eventsOnTrack = tracks.get(track) ?? [];
@@ -244,6 +246,46 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
           {ids.map(id => <button className="action wide" key={id} onClick={() => go({view:'graph', node:id})}>Locate {id} in graph <ArrowRight size={15}/></button>)}
           <details><summary>Original event</summary><code className="break">{reference.id}</code><pre>{JSON.stringify(raw?.value?.raw, null, 2)}</pre></details>
         </div>}
+      </Panel>
+    </div>
+  </>;
+}
+
+function CsvProfile({profile, query, go}: {profile: Profile; query: Query; go: (q: Partial<Query>) => void}) {
+  const [kind, setKind] = useState('inference');
+  const visible = profile.events.filter(row => row.kind === kind);
+  const selected = profile.events.find(row => row.id === query.event) ?? visible[0];
+  const raw = useData<{raw: unknown}>(selected ? '/profiles/' + profile.id + '/events/' + selected.id : undefined);
+  const nodeIds = profile.mappings.filter(map => selected?.operation && map.operation_ids.includes(selected.operation))
+    .flatMap(map => map.node_ids);
+  return <>
+    <div className="stats">
+      <Stat title="NetRun graph p50" value={us(profile.latency_us?.p50)} note="QAIRT CSV"/>
+      <Stat title="NetRun graph p95" value={us(profile.latency_us?.p95)} note="QAIRT CSV"/>
+      <Stat title="Retained executions" value={String(profile.conditions.repeats ?? 'Unavailable')}/>
+      <Stat title="QAIRT viewer" value={profile.profiler_version ?? 'Unavailable'}/>
+    </div>
+    <div className="timeline-layout">
+      <Panel title="QAIRT Profile Records" icon={<Activity size={16}/>} actions={<div className="inline">
+        <select aria-label="Record type" value={kind} onChange={e => {setKind(e.target.value); go({event:undefined});}}>
+          <option value="inference">NetRun graph executions</option>
+          {profile.events.some(row => row.kind === 'node') && <option value="node">HTP operation cycles</option>}
+        </select>
+        <a className="action" href={profile.raw_trace}><ArrowDownToLine size={14}/> Raw CSV</a></div>}>
+        <div className="timeline-body">
+          <p className="quiet">CSV message timestamps are shown as recorded. Operation start times are unavailable.</p>
+          <div className="event-list"><table><thead><tr><th>Record</th><th>Message timestamp</th><th>Reported value</th></tr></thead>
+            <tbody>{visible.map(row => <tr key={row.id} className={selected?.id === row.id ? 'current' : ''}>
+              <td><button onClick={() => go({event:row.id})}>{row.name}</button></td>
+              <td>{us(row.recorded_timestamp_us)}</td><td>{measure(row.duration, row.unit)}</td>
+            </tr>)}</tbody></table></div>
+        </div>
+      </Panel>
+      <Panel title="Raw CSV record" icon={<FileJson size={16}/>}>
+        <div className="detail">
+          {selected && <><code className="break">{selected.id}</code><pre>{JSON.stringify(raw?.value?.raw, null, 2)}</pre></>}
+          {nodeIds.map(id => <button className="action wide" key={id} onClick={() => go({view:'graph',node:id})}>Locate {id} in graph <ArrowRight size={15}/></button>)}
+        </div>
       </Panel>
     </div>
   </>;
@@ -343,10 +385,10 @@ function ImportDialog({catalog, modelId, profileId, close, done}: {catalog: Cata
       {(action === 'import_profile' || action === 'run_ort_profile') && <label>Model<select required name="model_id" defaultValue={modelId}>
         {catalog.models.filter(x => x.format === 'ONNX').map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
       </select></label>}
-      {(action === 'import_model' || action === 'import_profile') && <label>Path relative to runs/inbox<input key={action} name="filename" required placeholder={action === 'import_model' ? 'model.onnx' : 'profile.json'}/></label>}
+      {(action === 'import_model' || action === 'import_profile') && <label>Path relative to runs/inbox<input key={action} name="filename" required placeholder={action === 'import_model' ? 'model.onnx' : traceFormat === 'qnn-viewer-csv-v2.50' ? 'profile.csv' : 'profile.json'}/></label>}
       {action === 'import_model' && <label>AIMET encodings path (optional)<input name="encodings" placeholder="model.encodings"/></label>}
       {action === 'import_profile' && <>
-        <label>Trace format<select name="format" value={traceFormat} onChange={e => setTraceFormat(e.target.value)}><option value="ort-chrome-v1">ORT Chrome Trace</option><option value="optrace-chrome-v1">Optrace converted Chrome Trace</option><option value="qnn-linting-chrome-v2.50">QAIRT 2.50 HTP Linting Trace</option><option value="qnn-optrace-chrome-v2.50">QAIRT 2.50 HTP Optrace</option></select></label>
+        <label>Trace format<select name="format" value={traceFormat} onChange={e => setTraceFormat(e.target.value)}><option value="ort-chrome-v1">ORT Chrome Trace</option><option value="qnn-viewer-csv-v2.50">QAIRT 2.50 Basic / Detailed CSV</option><option value="optrace-chrome-v1">Optrace converted Chrome Trace</option><option value="qnn-linting-chrome-v2.50">QAIRT 2.50 HTP Linting Trace</option><option value="qnn-optrace-chrome-v2.50">QAIRT 2.50 HTP Optrace</option></select></label>
         {traceFormat === 'qnn-optrace-chrome-v2.50' ?
           <label>DLC framework trace CSV (optional)<input name="framework_csv" placeholder="compiled-graph.csv"/></label> :
           <label>Operation mapping path (optional)<input name="mapping_file" placeholder="mapping.json"/></label>}
@@ -434,7 +476,9 @@ function App() {
       {error && <p className="error" role="alert">{error}</p>}
       {query.view === 'graph' && graph && <GraphView key={graph.artifact.id} graph={graph} profile={profile} query={query} go={go}
         nodeRanks={nodeRequest?.value?.hotspots ?? []} moduleRanks={moduleRequest?.value?.hotspots ?? []}/>}
-      {query.view === 'timeline' && profile && <Timeline key={profile.id} profile={profile} query={query} go={go}/>}
+      {query.view === 'timeline' && profile && (profile.raw_format === 'csv' ?
+        <CsvProfile key={profile.id} profile={profile} query={query} go={go}/> :
+        <Timeline key={profile.id} profile={profile} query={query} go={go}/>)}
       {query.view === 'diagnosis' && catalog && <Diagnosis profile={profile} query={query} experiment={comparison} go={go}
         hotspots={(query.level === 'node' ? nodeRequest : moduleRequest)?.value?.hotspots ?? []}/>}
       {!error && (query.view === 'graph' && !graph || query.view === 'timeline' && !profile) &&

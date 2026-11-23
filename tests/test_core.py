@@ -184,3 +184,22 @@ def test_real_qnn_optrace_deduplicates_and_joins_framework_trace(local):
     assert ranking[0]["share"] == 1
     explanation = core.explain_hotspot(profile["id"], ranking[0]["id"], "node")
     assert explanation["mapping_proof"][0]["evidence"]["source_onnx_names"] == ["dequant", "quant"]
+
+
+def test_qnn_viewer_csv_preserves_raw_records_and_units(local):
+    core, identifier = local
+    filename = Path("tests/fixtures/qnn-viewer-2.50.csv")
+    (core.inbox / filename.name).write_bytes(filename.read_bytes())
+    result = core.import_profile(identifier, filename.name, "qnn-viewer-csv-v2.50", backend="QNN HTP", fixture=True)
+    assert result["raw_format"] == "csv"
+    assert result["unit"] == "cycles"
+    assert result["latency_us"]["p50"] == 10016
+    prof = core.profile(result["id"])
+    assert result["profiler_version"] == "v2.50.40.260831140417"
+    event = next(row for row in prof["events"] if row["operation"] == "OpId_17")
+    assert event["duration"] == 405061
+    assert event["start"] is None
+    assert event["recorded_timestamp_us"] == 506040810170
+    assert core.profile_event(result["id"], event["id"])["raw"][2:4] == ["405061", "CYCLES"]
+    assert core.get_hotspots(result["id"], level="node")["hotspots"][0]["total_us"] is None
+    assert core.item(result["id"], "trace.csv").read_bytes() == filename.read_bytes()
