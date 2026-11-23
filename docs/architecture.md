@@ -48,12 +48,12 @@ ORT 基准比较要求相同输入摘要、设备、执行后端、版本和运�
 
 | 输入或执行 | 接入边界 |
 | --- | --- |
-| QNN Profile 日志和 CSV | 为验证过的 SDK 输出在 adapter registry 注册版本化解析器 |
+| QNN Profile 日志和 CSV | 已支持 QAIRT 2.50 viewer 的 Basic/Detailed CSV。原始 QNN log 由同版本 viewer 解码 |
 | Optrace | 支持官方文档描述的转换目标 Chrome Trace 中含有 `ts` 和 `dur` 的完整事件，当前已用格式 Fixture 验证 |
-| QHAS JSON、HTP Graph JSON | 等待对应 SDK 真实样本和编译器映射，按版本加解析器 |
+| QHAS JSON、HTP Graph JSON | 支持 QAIRT JSON 1.0 作为 Profile 附件，以 HTP 原生操作 ID 关联同一轮测量 |
 | 编译器辅助映射 | 当前接受本项目定义的 operation_ids / node_ids 多对多 JSON 边表 |
 | HTP Binary | 支持登记、Hash、设备与兼容性元数据 |
-| qnn-net-run、ADB、SSH | 通过 `QnnNativeRunner` 接口接入 Linux 和设备端，须提供白名单参数、SDK/SoC、输入和 Trace 元数据 |
+| qnn-net-run、ADB、SSH | [本机 ADB 采集](android-runner.md) 已验证。专用 Linux 和 SSH Runner 可复用 Core 导入 |
 | HMX/HVX/DMA | Timeline 预留按资源名分组，资源标注交给经过验证的解析器 |
 
 Linux 接入沿用 `ProfileSession`、`ProfileEvent` 和归因对象。Web 和 MCP 只消费这些 Core 对象。当前工作台运行于 loopback，并假定 Inbox 中是用户信任的本地文件。

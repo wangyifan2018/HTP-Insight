@@ -47,6 +47,8 @@ runs/aimet-env/bin/python -m scripts.aimet_encodings
 
 HTP Context Binary 可通过 `import_model` 登记，接受 `target_device` 和 `compatibility`。HTP 原生执行及专有文件解析属于 Future Integration。
 
+Android 设备上的 Basic、Detailed、Linting 与 Optrace 采集可使用 [QAIRT Android 运行器](docs/android-runner.md)。
+
 ## 数据与证据
 
 | 路径 | 内容 |
