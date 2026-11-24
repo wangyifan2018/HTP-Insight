@@ -63,6 +63,10 @@ Linux 接入沿用 `ProfileSession`、`ProfileEvent` 和归因对象。Web 和 M
 
 ## 产品工作流和 Notebook 交接
 
+Web 上传按独立 Inbox 批次顺序写入，保留外置张量的相对目录，CLI 和 MCP 继续读取相同文件。DLC 与 Context 可在登记时引用已注册的源 ONNX，保持编译产物与 Profile 的稳定记录。Web 和 CLI 调用同一个 AndroidRunner。Web 只从主机配置读取 ADB 与 SDK，验证配对、设备和输入后才能发起采集。
+
 首页按模型、采集与操作证据显示阶段可用性。能力接口查询本机 ORT CPU 提供者与已保存实测；引导实例必须来自两侧为实测、条件匹配且通过数值检查的实验。语义层按源 ONNX 已识别的层作用域归组，保留单层模型和一般 ONNX 视图。
 
 `generate_experiment_plan` 从指定 Profile 和热点解析输入输出 Shape、映射、代表事件及匹配附件，返回同一份结构化任务和 Markdown。Fixture 跳出真实任务生成；Unknown 引导收集归因。`analyze_model_performance` 聚合源模型、实测排名、证据缺口和对应的候选任务。Web、CLI 和 MCP 复用 Core，且导出只读。采集留在显式 ORT 或 Android runner 入口。
+
+Web 目录使用轻量 Profile 摘要。按文件替换信息缓存解析结果；完整 Profile 仍保留全部计时样本和操作。时间线提供缩放、搜索与分页，图画布分窗口显示节点。对于未命名 ONNX，只在确定的数据流连接上标注 Attention 或 MLP 模式，保存分组依据，其他节点保留通用归类。

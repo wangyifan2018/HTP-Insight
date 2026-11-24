@@ -1,9 +1,11 @@
 import hashlib
+from functools import lru_cache
 import json
 import math
 import os
 import platform
 import re
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -23,8 +25,29 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def digest_file(path):
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
 def encode(value):
     return json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False).encode()
+
+
+def profile_header(session, include_samples):
+    latency = session.latency_us
+    if latency and not include_samples:
+        latency = {key: value for key, value in latency.items() if key != "samples"}
+    return {
+        **session.model_dump(exclude={"events", "mappings", "latency_us"}), "latency_us": latency,
+        "event_count": len(session.events),
+        "operation_event_count": sum(event.kind == "node" and event.duration is not None for event in session.events),
+    }
+
+
+@lru_cache(maxsize=512)
+def cached_profile_header(path, mtime_ns, size, inode):
+    return profile_header(ProfileSession.model_validate_json(path.read_bytes()), include_samples=False)
 
 
 def atomic_write(path, data):
@@ -32,7 +55,10 @@ def atomic_write(path, data):
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
         temporary = Path(handle.name)
         try:
-            handle.write(data)
+            if isinstance(data, bytes):
+                handle.write(data)
+            else:
+                shutil.copyfileobj(data, handle)
             handle.close()
             temporary.replace(path)
         finally:
@@ -72,32 +98,45 @@ class Core:
 
     def import_model(self, filename: str, encodings: str | None = None, name: str | None = None,
                      origin: str | None = None, target_device: str | None = None,
-                     compatibility: dict | None = None) -> dict[str, Any]:
-        path = self.inbox_path(filename, {".onnx", ".bin"})
+                     compatibility: dict | None = None, source_model_id: str | None = None) -> dict[str, Any]:
+        source_model_id = source_model_id or None
+        path = self.inbox_path(filename, {".onnx", ".bin", ".dlc"})
         model = graph.read_model(path) if path.suffix.lower() == ".onnx" else None
-        payload = model.SerializeToString(deterministic=True) if model is not None else path.read_bytes()
+        if source_model_id:
+            if model is not None:
+                raise ValueError("A source model can only be paired with a DLC or Context")
+            self.graph(source_model_id)
+        payload = model.SerializeToString(deterministic=True) if model is not None else None
         raw_enc = self.inbox_path(encodings, {".json", ".encodings"}).read_bytes() if encodings else b""
         parsed_enc = graph.parse_encodings(json.loads(raw_enc)) if encodings else None
         if model is None and encodings:
             raise ValueError("Encodings require an ONNX graph")
-        model_sha = digest(payload)
-        identity = json.dumps([model_sha, digest(raw_enc), path.suffix.lower(), name or path.stem, origin,
-                               target_device, compatibility], sort_keys=True)
-        model_id = f"model-{digest(identity.encode())[:24]}"
+        model_sha = digest(payload) if payload is not None else digest_file(path)
+        identity = [model_sha, digest(raw_enc), path.suffix.lower(), name or path.stem, origin, target_device, compatibility]
+        if source_model_id:
+            identity.append(source_model_id)
+        model_id = f"model-{digest(json.dumps(identity, sort_keys=True).encode())[:24]}"
+        artifact_format = {".onnx": "ONNX", ".bin": "HTP_CONTEXT", ".dlc": "QNN_DLC"}[path.suffix.lower()]
+        link = self.link("graph", model=source_model_id or model_id) if model is not None or source_model_id else self.link("home", model=model_id)
+        target = self.item(model_id, {"ONNX": "model.onnx", "HTP_CONTEXT": "context.bin", "QNN_DLC": "model.dlc"}[artifact_format])
+        index = self.item(model_id, "artifact.json")
+        if index.is_file() and target.is_file() and (model is None or self.item(model_id, "graph.json").is_file()):
+            return {"artifact": ModelArtifact.model_validate_json(index.read_bytes()).model_dump(), "deep_link": link}
         artifact = ModelArtifact(
-            id=model_id, sha256=model_sha, name=name or path.stem, format="ONNX" if model is not None else "HTP_CONTEXT",
-            origin=origin, target_device=target_device, compatibility=compatibility or {},
+            id=model_id, sha256=model_sha, name=name or path.stem, format=artifact_format,
+            origin=origin, target_device=target_device, compatibility=compatibility or {}, source_model_id=source_model_id,
         )
         if model is not None:
             result = graph.inspect(model, artifact, parsed_enc)
-            atomic_write(self.item(model_id, "model.onnx"), payload)
+            atomic_write(target, payload)
             if encodings:
                 atomic_write(self.item(model_id, "encodings.json"), raw_enc)
             atomic_write(self.item(model_id, "graph.json"), encode(result.model_dump()))
         else:
-            atomic_write(self.item(model_id, "context.bin"), payload)
-        atomic_write(self.item(model_id, "artifact.json"), encode(artifact.model_dump()))
-        return {"artifact": artifact.model_dump(), "deep_link": self.link("graph", model=model_id)}
+            with path.open("rb") as stream:
+                atomic_write(target, stream)
+        atomic_write(index, encode(artifact.model_dump()))
+        return {"artifact": artifact.model_dump(), "deep_link": link}
 
     def inspect_graph(self, model_id: str) -> dict[str, Any]:
         return {**self.graph(model_id).model_dump(), "deep_link": self.link("graph", model=model_id)}
@@ -135,8 +174,7 @@ class Core:
 
     def profile_summary(self, session):
         return {
-            **session.model_dump(exclude={"events", "mappings"}), "event_count": len(session.events),
-            "operation_event_count": sum(event.kind == "node" and event.duration is not None for event in session.events),
+            **profile_header(session, include_samples=True),
             "deep_link": self.link("timeline", profile=session.id), "raw_trace": f"/api/profiles/{session.id}/raw",
         }
 
@@ -273,6 +311,9 @@ class Core:
         nodes = [node for node in model.nodes if node.id in hotspot.node_ids]
         first_event = next(event for event in session.events if event.id == hotspot.evidence_ids[0])
         suggestion = analysis.hypothesis(hotspot.module, {node.op for node in nodes})
+        if any(module.id == hotspot.module and module.basis == "dataflow" for module in model.modules):
+            suggestion.mechanism = "An operator dataflow pattern identifies this group; its source projections and layer names are unavailable."
+            suggestion.adaptation = "Confirm the source model and choose one measured operator boundary to adapt."
         if hotspot.module in {"Unknown", "Shared"}:
             suggestion.mechanism = "The operation duration is available, but its module attribution is incomplete."
             suggestion.adaptation = "Import compiler mappings and check operation boundaries before editing the graph."
@@ -383,9 +424,12 @@ class Core:
         return summary
 
     def compare_experiments(self, baseline: str, candidate: str, hypothesis: str | None = None,
-                            atol: float = 1e-5, rtol: float = 1e-4) -> dict[str, Any]:
+                            atol: float = 1e-5, rtol: float = 1e-4, name: str | None = None) -> dict[str, Any]:
         if any(not math.isfinite(value) or value < 0 for value in (atol, rtol)):
             raise ValueError("Comparison tolerances must be finite and nonnegative")
+        name = name.strip() if name else None
+        if name and (len(name) > 120 or not name.isprintable()):
+            raise ValueError("Experiment name must be a single line of no more than 120 characters")
         left, right = self.session(baseline), self.session(candidate)
         left_graph, right_graph = self.graph(left.model_id), self.graph(right.model_id)
         reasons = []
@@ -442,6 +486,8 @@ class Core:
         identity = [baseline, candidate, hypothesis]
         if (atol, rtol) != (1e-5, 1e-4):
             identity += [atol, rtol]
+        if name:
+            identity.append(name)
         identifier = f"experiment-{digest(encode(identity))[:24]}"
         result = ExperimentResult(
             id=identifier, baseline=baseline, candidate=candidate, hypothesis=hypothesis, numeric=numeric,
@@ -452,20 +498,31 @@ class Core:
                     "trace_runs": {"baseline": left.conditions.get("trace_runs"), "candidate": right.conditions.get("trace_runs")},
                     "sources": {"baseline": [left.source, left.backend, left.provenance],
                                 "candidate": [right.source, right.backend, right.provenance]}}
+        if name:
+            response["name"] = name
         atomic_write(self.item(identifier, "experiment.json"), encode(response))
         return response
 
-    def catalog(self):
+    def catalog(self, compact=False):
+        paths = [(entry.stat(), entry) for entry in (self.root / "store").glob("profile-*/profile.json")]
+        paths.sort(key=lambda item: item[0].st_mtime_ns, reverse=True)
+        summaries = []
+        for stat, path in paths:
+            if compact:
+                summary = cached_profile_header(path, stat.st_mtime_ns, stat.st_size, stat.st_ino)
+                identifier = summary["id"]
+                summaries.append({**summary, "deep_link": self.link("timeline", profile=identifier),
+                                  "raw_trace": f"/api/profiles/{identifier}/raw"})
+            else:
+                summaries.append(self.profile_summary(ProfileSession.model_validate_json(path.read_bytes())))
         return {
             key: [json.loads(path.read_bytes()) for path in sorted((self.root / "store").glob(pattern),
                     key=lambda entry: entry.stat().st_mtime, reverse=True)]
             for key, pattern in (("models", "model-*/artifact.json"), ("experiments", "experiment-*/experiment.json"))
-        } | {"profiles": [self.profile_summary(ProfileSession.model_validate_json(path.read_bytes()))
-                         for path in sorted((self.root / "store").glob("profile-*/profile.json"),
-                                            key=lambda entry: entry.stat().st_mtime, reverse=True)]}
+        } | {"profiles": summaries}
 
     def workspace_status(self):
-        catalog = self.catalog()
+        catalog = self.catalog(compact=True)
         models = {model["id"]: model for model in catalog["models"]}
         measured = {profile["id"]: profile for profile in catalog["profiles"] if profile["provenance"] == "measured"}
         ort_available = "CPUExecutionProvider" in profiles.ort.get_available_providers()
@@ -495,7 +552,7 @@ class Core:
     def report(self, experiment_id):
         exp = self.read(experiment_id, "experiment.json")
         profiles = [self.session(exp[key]) for key in ("baseline", "candidate")]
-        lines = ["# HTP Insight experiment", "", f"Experiment `{exp['id']}`", "",
+        lines = [f"# {exp.get('name') or 'HTP Insight experiment'}", "", f"Experiment `{exp['id']}`", "",
                  exp["hypothesis"] or "Hypothesis unavailable", "",
                  f"| {exp['latency'].get('label', 'Uninstrumented latency')} | Baseline (µs) | Candidate (µs) | Change |",
                  "| --- | ---: | ---: | ---: |"]

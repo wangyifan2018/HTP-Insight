@@ -1,5 +1,5 @@
 import { Activity, ArrowRight, CircuitBoard, ClipboardList, FilePlus2, ScanLine } from 'lucide-react';
-import type { Artifact, GuidedExample, ProfileInfo, WorkspaceStatus } from './types';
+import type { AndroidStatus, Artifact, GuidedExample, ProfileInfo, WorkspaceStatus } from './types';
 
 const steps = [
   {name: 'Import', icon: FilePlus2, description: 'Register an ONNX model and optional quantization encodings.'},
@@ -16,9 +16,9 @@ export function deviceName(device: ProfileInfo['device']) {
     .filter(Boolean).join(' · ') || 'Device unavailable';
 }
 
-export function WorkspaceHome({model, profile, status, statusError, hotspot, openStep, openExample}: {
+export function WorkspaceHome({model, profile, status, statusError, hotspot, openStep, openExample, openSource}: {
   model?: Artifact; profile?: ProfileInfo; status?: WorkspaceStatus; statusError?: string; hotspot?: string;
-  openStep: (step: Step) => void; openExample: (example: GuidedExample) => void;
+  openStep: (step: Step) => void; openExample: (example: GuidedExample) => void; openSource?: () => void;
 }) {
   const ready = [!!model, !!profile, !!profile?.operation_event_count, !!hotspot, !!hotspot && profile?.provenance !== 'fixture'];
   return <div className="home">
@@ -36,8 +36,10 @@ export function WorkspaceHome({model, profile, status, statusError, hotspot, ope
       <section className="panel workspace-summary" aria-labelledby="selection-title">
         <h2 id="selection-title">Current analysis</h2>
         {model ? <><b>{model.name}</b><p>{profile ? `${profile.backend ?? 'Backend unavailable'} · ${profile.source} · ${profile.provenance}` :
-          model.format === 'HTP_CONTEXT' ? `HTP Context · ${model.target_device ?? 'Target unavailable'}. Import its source ONNX to rank operators.` : 'A profile is needed to rank this model.'}</p>
-          {profile && <p>{deviceName(profile.device)}</p>}</> : <p>Import an ONNX file or open a recorded experiment.</p>}
+          model.format !== 'ONNX' ? `${model.format} · ${model.target_device ?? 'Target unavailable'}` : 'A profile is needed to rank this model.'}</p>
+          {profile && <p>{deviceName(profile.device)}</p>}
+          {openSource && <button className="action self-start" onClick={openSource}>Open paired source ONNX <ArrowRight size={14}/></button>}
+          {model.format !== 'ONNX' && !openSource && <p>Pair it with its source ONNX to browse and capture.</p>}</> : <p>Import an ONNX file or open a recorded experiment.</p>}
       </section>
       <section className="panel workspace-summary" aria-labelledby="guide-title">
         <h2 id="guide-title">Guided analysis</h2>
@@ -51,8 +53,8 @@ export function WorkspaceHome({model, profile, status, statusError, hotspot, ope
   </div>;
 }
 
-export function Capabilities({status, error, showProfile}: {
-  status?: WorkspaceStatus; error?: string; showProfile: (id: string) => void;
+export function Capabilities({status, error, android, showProfile}: {
+  status?: WorkspaceStatus; error?: string; android?: AndroidStatus; showProfile: (id: string) => void;
 }) {
   if (error) return <p className="error" role="alert">{error}</p>;
   if (!status) return <p role="status">Checking workspace capabilities…</p>;
@@ -62,7 +64,8 @@ export function Capabilities({status, error, showProfile}: {
   const rows = [
     ['Graph and quantization', 'Available', 'Import ONNX and AIMET encodings, or read QDQ directly from the graph.', undefined],
     ['ORT CPU', status.ort_cpu_available ? 'Available locally' : 'Runtime unavailable', 'Run a CPU benchmark and collect a separate operation trace.', ort?.id],
-    ['Android QAIRT', htp ? 'Measured capture in workspace' : 'Requires QAIRT and an ADB device', 'The local Android CLI runs Basic, Detailed, Linting and Optrace. The Web app opens or imports their results.', htp?.id],
+    ['Android QAIRT', android?.ready ? `Ready · ${android.device?.soc ?? 'authorized device'}` : htp ? 'Recorded capture available' : 'Requires QAIRT and ADB',
+      android?.reason ?? 'Run a paired DLC or Context from Profile Timeline, or import a saved capture.', htp?.id],
     ['HTP mapping', 'Evidence-dependent', 'Framework traces can connect HTP operations to source ONNX. Unmapped work stays Unknown.', undefined],
     ['Claude Code MCP', 'Local stdio', 'The project MCP config exposes evidence and Notebook plans. Approve the project server in your MCP client.', undefined],
     ['Linux / SSH capture', 'Planned', 'Import compatible exports from an external Qualcomm environment.', undefined],

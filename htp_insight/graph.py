@@ -84,6 +84,39 @@ def module_name(node):
     return "convolution" if node.op_type == "Conv" else "graph"
 
 
+def recover_unnamed_modules(nodes):
+    """Recognize narrow graph patterns when meaningful ONNX names are unavailable."""
+    producer = {name: node for node in nodes for name in node.outputs if name}
+    consumers = defaultdict(list)
+    for node in nodes:
+        for name in node.inputs:
+            consumers[name].append(node)
+    known = set()
+    for center in nodes:
+        if center.module != "graph" or center.op not in {"Softmax", "Gelu", "Relu"} or len(center.inputs) != 1:
+            continue
+        prior = producer.get(center.inputs[0])
+        chain = [center]
+        if center.op == "Softmax" and prior and prior.op in {"Div", "Mul"} and prior.module == "graph":
+            upstream = [producer[name] for name in prior.inputs if name in producer and producer[name].op == "MatMul"]
+            if len(upstream) == 1:
+                chain.append(prior)
+                prior = upstream[0]
+        successors = {node.id: node for name in center.outputs for node in consumers[name]
+                      if node.op == "MatMul" and node.inputs[0] == name}
+        if prior is None or prior.op != "MatMul" or len(successors) != 1:
+            continue
+        chain.extend((prior, next(iter(successors.values()))))
+        if any(node.module != "graph" for node in chain):
+            continue
+        role = "attention" if center.op == "Softmax" else "mlp"
+        identifier = f"pattern.{center.id}.{role}"
+        for node in chain:
+            node.module = identifier
+        known.add(identifier)
+    return known
+
+
 def inspect(model, artifact: ModelArtifact, encodings=None):
     issue = None
     try:
@@ -142,24 +175,27 @@ def inspect(model, artifact: ModelArtifact, encodings=None):
             quant_index[name].append(idx)
 
     nodes = []
-    modules = defaultdict(list)
     producer = {name: f"n{i}" for i, node in enumerate(graph.node) for name in node.output if name}
     for i, node in enumerate(graph.node):
         node_id = f"n{i}"
         module = module_name(node)
-        modules[module].append(node_id)
         nodes.append(GraphNode(
             id=node_id, name=node.name, op=node.op_type, domain=node.domain, module=module,
             inputs=list(node.input), outputs=list(node.output),
             predecessors=list(dict.fromkeys(producer[name] for name in node.input if name in producer)),
             quantization=sorted({idx for name in [*node.input, *node.output] for idx in quant_index[name]}),
         ))
-    kinds = {name.rsplit(".", 1)[-1] for name in modules}
+    inferred = recover_unnamed_modules(nodes)
+    modules = defaultdict(list)
+    for node in nodes:
+        modules[node.module].append(node.id)
+    kinds = {name.rsplit(".", 1)[-1] for name in modules if name not in inferred}
     architecture = "Transformer" if {"attention", "mlp"} <= kinds else "ONNX graph"
     return Graph(
         artifact=artifact, architecture=architecture, nodes=nodes, tensors=tensors,
-        modules=[SemanticModule(id=name, kind=name.rsplit(".", 1)[-1] if name.startswith("layer.") else name.split(".")[0],
-                                parent=name.rsplit(".", 1)[0] if name.startswith("layer.") else architecture, nodes=ids)
+        modules=[SemanticModule(id=name, kind=name.rsplit(".", 1)[-1] if name.startswith(("layer.", "pattern.")) else name.split(".")[0],
+                                parent=name.rsplit(".", 1)[0] if name.startswith("layer.") else architecture, nodes=ids,
+                                basis="dataflow" if name in inferred else "scope" if name != "graph" else None)
                  for name, ids in modules.items()],
         inputs=[v.name for v in graph.input if v.name not in constants], outputs=[v.name for v in graph.output],
         initializer_elements=sum(prod(t.dims) for t in graph.initializer),

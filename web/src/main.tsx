@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Activity, ArrowDownToLine, ArrowRight, Box, ChevronDown, CircuitBoard, ClipboardList, Clock3, Cpu, FileJson, GitFork, House, Layers3, ScanLine, Search, Workflow } from 'lucide-react';
-import type { Catalog, Evidence, EvidenceArtifact, Experiment, ExperimentPlan, Explanation, Graph, GuidedExample, HardwareTimeline, Hotspot, Node, Profile, ProfileInfo, Tensor, TimeUnit, WorkspaceStatus } from './types';
+import type { AndroidStatus, Artifact, Catalog, Evidence, EvidenceArtifact, Experiment, ExperimentPlan, Explanation, Graph, GuidedExample, HardwareTimeline, Hotspot, Node, Profile, ProfileInfo, Tensor, TimeUnit, WorkspaceStatus } from './types';
 import { Capabilities, WorkspaceHome, deviceName } from './workflow';
 import { DependencyArrows, OperationDependencies, Parallelism, laneName } from './hardware-timeline';
 import type { Step } from './workflow';
@@ -20,6 +20,7 @@ function readQuery(): Query {
 async function api<T>(path: string, request?: RequestInit): Promise<T> {
   const response = await fetch('/api' + path, request);
   if (!response.ok) {
+    if (!response.headers.get('content-type')?.includes('application/json')) throw new Error(await response.text());
     const body = await response.json();
     throw new Error(typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail));
   }
@@ -30,10 +31,10 @@ function useData<T>(path?: string) {
   const [state, setState] = useState<{path: string; value?: T; error?: string}>();
   useEffect(() => {
     if (!path) return;
-    let active = true;
-    api<T>(path).then(value => { if (active) setState({path, value}); })
-      .catch(error => { if (active) setState({path, error: error.message}); });
-    return () => { active = false; };
+    const request = new AbortController();
+    api<T>(path, {signal:request.signal}).then(value => { if (!request.signal.aborted) setState({path, value}); })
+      .catch(error => { if (!request.signal.aborted) setState({path, error: error.message}); });
+    return () => request.abort();
   }, [path]);
   return state?.path === path ? state : undefined;
 }
@@ -45,6 +46,8 @@ const hotspotCost = (row?: Hotspot) => row?.total_us ?? row?.total_cycles;
 const percent = (v?: number | null) => v == null ? '—' : (v * 100).toFixed(1) + '%';
 const moduleNames: Record<string, string> = {attention: 'Attention', mlp: 'MLP', input_projection: 'Input projection', output_projection: 'Output projection', residual_attn: 'Attention residual', residual_mlp: 'MLP residual', other: 'Other operators'};
 function label(value: string) {
+  const pattern = value.match(/^pattern\.(n\d+)\.(attention|mlp)$/);
+  if (pattern) return `${moduleNames[pattern[2]]} pattern · ${pattern[1]}`;
   const layer = value.match(/^layer\.(\d+)(?:\.(\w+))?$/);
   if (!layer) return moduleNames[value] ?? value;
   return `Layer ${layer[1]}` + (layer[2] ? ` · ${moduleNames[layer[2]] ?? layer[2]}` : '');
@@ -111,23 +114,26 @@ function GraphView({graph, query, profile, nodeRanks, moduleRanks, go}: {graph: 
   const [chosenModule, setModule] = useState<string>();
   const best = moduleRanks.find(item => graph.modules.some(mod => mod.id === item.id));
   const node = graph.nodes.find(n => n.id === query.node);
-  const module = node?.module || (graph.modules.some(m => m.id === chosenModule) ? chosenModule : undefined) || best?.id || graph.modules[0]?.id;
+  const structural = moduleRanks.find(item => item.id !== 'graph' && graph.modules.some(mod => mod.id === item.id));
+  const module = node?.module || (graph.modules.some(m => m.id === chosenModule) ? chosenModule : undefined) || structural?.id || best?.id || graph.modules[0]?.id;
   const local = graph.nodes.filter(n => n.module === module);
   const costs = new Map(nodeRanks.filter(row => row.node_ids.length === 1).flatMap(row => { const cost = hotspotCost(row); return cost == null ? [] : [[row.node_ids[0], cost] as const]; }));
   const picked = node || [...local].sort((a, b) => (costs.get(b.id) ?? -1) - (costs.get(a.id) ?? -1))[0];
+  const canvasStart = Math.max(0, Math.min(local.length - 120, local.findIndex(row => row.id === picked?.id) - 40));
+  const canvasNodes = local.slice(canvasStart, canvasStart + 120);
   const match = nodeRanks.find(row => row.node_ids.length === 1 && row.node_ids[0] === picked?.id);
   const shared = nodeRanks.filter(row => row.node_ids.length > 1 && row.node_ids.includes(picked?.id ?? ''));
   const event = match?.evidence_ids[0] ?? shared[0]?.evidence_ids[0];
   const raw = useData<{raw: unknown}>(profile && event ? '/profiles/' + profile.id + '/events/' + event : undefined);
   const nodeIndex = new Map(graph.nodes.map(n => [n.id, n]));
-  const groups = new Map<string, {id: string; nodeCount: number; shown: Node[]}[]>();
+  const groups = new Map<string, {id: string; nodeCount: number; shown: Node[]; basis?: Graph['modules'][number]['basis']}[]>();
   const term = search.trim().toLowerCase();
   for (const mod of graph.modules) {
     const shown = mod.nodes.map(id => nodeIndex.get(id)!).filter(item => [mod.id, label(mod.id), item.id, item.op, item.name]
       .some(value => value.toLowerCase().includes(term)));
     if (!shown.length) continue;
     const entries = groups.get(mod.parent) ?? [];
-    entries.push({id:mod.id, nodeCount:mod.nodes.length, shown});
+    entries.push({id:mod.id, nodeCount:mod.nodes.length, shown, basis:mod.basis});
     groups.set(mod.parent, entries);
   }
   const select = (id: string) => go({node: id});
@@ -158,7 +164,7 @@ function GraphView({graph, query, profile, nodeRanks, moduleRanks, go}: {graph: 
               const hot = moduleRanks.find(item => item.id === mod.id);
               const name = parent === graph.architecture ? label(mod.id) : label(mod.id.split('.').at(-1) ?? mod.id);
               return <div key={mod.id}>
-                <button className={mod.id === module ? 'module chosen' : 'module'} aria-expanded={open} onClick={() => {setModule(mod.id); go({node:undefined});}}>
+                <button className={mod.id === module ? 'module chosen' : 'module'} aria-expanded={open} title={mod.basis === 'dataflow' ? 'Inferred from connected ONNX operators' : undefined} onClick={() => {setModule(mod.id); go({node:undefined});}}>
                   <ChevronDown size={14} className={open ? '' : 'collapsed'}/><Box size={14}/><span>{name}</span><small>{hot ? percent(hot.share) : mod.nodeCount}</small>
                 </button>
                 {open && mod.shown.map(item => <button className={'tree-node ' + (picked?.id === item.id ? 'selected' : '')} key={item.id} onClick={() => select(item.id)}>
@@ -169,8 +175,8 @@ function GraphView({graph, query, profile, nodeRanks, moduleRanks, go}: {graph: 
           </div>)}
         </div>
       </Panel>
-      <Panel title={label(module ?? 'Graph')} icon={<Workflow size={16}/>} className="workspace" actions={<span className="quiet">{local.length} operators</span>}>
-        <GraphCanvas nodes={local} selected={picked?.id} costs={costs} select={select}/>
+      <Panel title={label(module ?? 'Graph')} icon={<Workflow size={16}/>} className="workspace" actions={<span className="quiet">{local.length > canvasNodes.length ? `${canvasStart + 1}–${canvasStart + canvasNodes.length} of ` : ''}{local.length} operators</span>}>
+        <GraphCanvas nodes={canvasNodes} selected={picked?.id} costs={costs} select={select}/>
         <div className="panel-foot"><span><i className="legend blue"/> Operator</span><span><i className="legend gold"/> Higher trace duration</span></div>
       </Panel>
       <Panel title="Node inspector" icon={<ScanLine size={15}/>} className="inspector">
@@ -215,6 +221,9 @@ function EvidenceFiles({items}: {items?: EvidenceArtifact[]}) {
 function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q: Partial<Query>) => void}) {
   const [runId, setRun] = useState<string>();
   const [showArrows, setShowArrows] = useState(true);
+  const [zoom, setZoom] = useState(1);
+  const [eventTerm, setEventTerm] = useState('');
+  const [page, setPage] = useState<{event?: string; index: number}>();
   const lanePlot = useRef<HTMLDivElement>(null);
   const request = useData<HardwareTimeline>(profile.conditions.adapter === 'qnn-optrace-chrome-v2.50' ? '/profiles/' + profile.id + '/htp-timeline' : undefined);
   const hardware = request?.value;
@@ -239,16 +248,27 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
   const operation = reference?.operation;
   const proof = profile.mappings.find(mapping => mapping.evidence && operation
     && mapping.operation_ids.includes(operation))?.evidence;
-  const min = run?.start ?? shown[0]?.start ?? 0;
-  const max = run ? run.start + run.duration : Math.max(min + 1, ...shown.map(row => row.start + row.duration));
-  const range = Math.max(1, max - min);
+  const first = run?.start ?? shown[0]?.start ?? 0;
+  const last = run ? Math.max(first + 1, run.start + run.duration) : shown.reduce((latest, row) => Math.max(latest, row.start + row.duration), first + 1);
   const raw = useData<{raw: unknown; related_evidence: EvidenceArtifact[]}>(reference ? '/profiles/' + profile.id + '/events/' + reference.id : undefined);
   const tracks = new Map<string, typeof timed>(hardware?.lanes.map(lane => [lane.id, []]));
   const laneById = new Map(hardware?.lanes.map(lane => [lane.id, lane]));
   const blocker = hardware?.blockers.find(row => row.source === query.blocker && row.target === reference?.id);
   const hardwareEvent = reference ? hardware?.events[reference.id] : undefined;
   const hardwareLane = laneById.get(hardwareEvent?.lane_id ?? '');
+  const referenceStart = reference?.start ?? first;
+  const relativeStart = blocker ? Math.min(blocker.idle_from, hardware?.events[blocker.source].start ?? referenceStart) : referenceStart;
+  const relativeEnd = referenceStart + (reference?.duration ?? 0);
+  const midpoint = (relativeStart + relativeEnd) / 2;
+  const range = Math.min(last - first, Math.max(1, (last - first) / zoom, (relativeEnd - relativeStart) * 1.2));
+  const min = Math.max(first, Math.min(last - range, midpoint - range / 2));
+  const max = min + range;
+  const normalizedTerm = eventTerm.trim().toLowerCase();
+  const found = normalizedTerm ? shown.filter(row => `${row.name} ${row.operation ?? ''} ${row.id}`.toLowerCase().includes(normalizedTerm)) : shown;
+  const currentPage = Math.max(0, Math.floor(found.findIndex(row => row.id === reference?.id) / 80));
+  const pageIndex = Math.min(Math.max(0, Math.ceil(found.length / 80) - 1), page?.event === reference?.id ? page?.index ?? 0 : currentPage);
   for (const row of shown) {
+    if (row.start > max || row.start + row.duration < min) continue;
     const track = hardware ? hardware.events[row.id]?.lane_id ?? 'unassigned' : row.track || row.resource || 'Unspecified';
     const eventsOnTrack = tracks.get(track) ?? [];
     eventsOnTrack.push(row);
@@ -275,6 +295,9 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
     </div>
     <div className="timeline-layout">
       <Panel title="Operation timeline" icon={<Activity size={16}/>} actions={<div className="inline">
+        <select aria-label="Timeline zoom" value={zoom} onChange={e => setZoom(Number(e.target.value))}>
+          <option value={1}>Full capture</option><option value={4}>4× on selection</option><option value={16}>16× on selection</option>
+        </select>
         {hardware && <label className="dependency-control"><input type="checkbox" checked={showArrows} onChange={e => setShowArrows(e.target.checked)}/> Dependency arrows</label>}
         {!!runs.length && <select aria-label="Trace run" value={run?.id} onChange={e => {setRun(e.target.value); go({event:undefined, node:undefined});}}>
           {runs.map((row, i) => <option key={row.id} value={row.id}>Run {i+1}</option>)}
@@ -282,13 +305,13 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
         <div className="timeline-body">
           {request?.error && <p className="error" role="alert">{request.error}</p>}
           {blocker && <p className="blocker-focus"><b>Possible blocker</b> · {hardware?.events[blocker.source].name} → {hardwareEvent?.name} · {measure(blocker.overlap_cycles, 'cycles')} overlap</p>}
-          <div className="axis">{[0,.25,.5,.75,1].map(n => <span key={n}>{measure(n * range, profile.unit)}</span>)}</div>
+          <div className="axis">{[0,.25,.5,.75,1].map(n => <span key={n}>{measure(min - first + n * range, profile.unit)}</span>)}</div>
           <div ref={lanePlot} className={hardware ? 'hardware-tracks' : undefined}>
           {[...tracks.entries()].map(([track, rows]) => <div className="track" key={track}>
             <div>{profile.source === 'ORT' ? 'CPU · ' : ''}{hardware ? laneById.has(track) ? laneName(laneById.get(track)!) : 'Instance unavailable' : track}</div>
             <div className="track-bars">{rows.map(row => <button key={row.id} aria-label={row.name} data-event={row.id} title={row.name + ' · ' + measure(row.duration, row.unit)}
               className={[row.id === reference?.id ? 'active' : '', row.id === blocker?.source ? 'possible-blocker' : '', hardware?.events[row.id]?.wait_kind ? 'recorded-wait' : ''].join(' ')}
-              style={{left: Math.max(0, (row.start-min)/range*100) + '%', width: row.duration/range*100 + '%'}}
+              style={{left: Math.max(0, (row.start-min)/range*100) + '%', width: (Math.min(max,row.start+row.duration)-Math.max(min,row.start))/range*100 + '%'}}
               onClick={() => selectEvent(row.id)}/>)}
               {blocker && hardwareEvent?.lane_id === track && <span className="lane-idle" style={{left:(blocker.idle_from-min)/range*100 + '%',width:(blocker.idle_to-blocker.idle_from)/range*100 + '%'}} aria-hidden="true"/>}
             </div>
@@ -296,10 +319,16 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
           {hardware && showArrows && <DependencyArrows timeline={hardware} selected={reference?.id} blocker={blocker} tracks={[...tracks.keys()]} min={min} range={range}/>}
           </div>
           {hardware && <p className="quiet timeline-legend"><span>Solid: data dependency</span><span>Dashed: sequencer order</span><span>Striped: recorded wait</span><span>Outlined: selected possible blocker</span></p>}
+          <div className="timeline-tools inline"><input aria-label="Find timeline operation" placeholder="Find an operation or ID" value={eventTerm}
+            onChange={e => {setEventTerm(e.target.value); setPage(undefined);}}/>
+            <button className="action" disabled={!pageIndex} onClick={() => setPage({event:reference?.id,index:pageIndex-1})}>Previous events</button>
+            <button className="action" disabled={(pageIndex+1)*80 >= found.length} onClick={() => setPage({event:reference?.id,index:pageIndex+1})}>Next events</button>
+            <span className="quiet">{found.length ? `${pageIndex*80+1}–${Math.min((pageIndex+1)*80,found.length)} of ${found.length}` : 'No matching operations'}</span>
+          </div>
           <div className="event-list"><table><thead><tr><th>Operation order</th><th>Offset</th><th>Duration</th></tr></thead>
-            <tbody>{shown.map(row => <tr key={row.id} className={row.id === reference?.id ? 'current' : ''}>
+            <tbody>{found.slice(pageIndex*80,(pageIndex+1)*80).map(row => <tr key={row.id} className={row.id === reference?.id ? 'current' : ''}>
               <td><button aria-pressed={row.id === reference?.id} onClick={() => selectEvent(row.id)}>{short(row.name.replace(/_kernel_time$/, ''))}</button></td>
-              <td>{measure(row.start-min, row.unit)}</td><td>{measure(row.duration, row.unit)}</td>
+              <td>{measure(row.start-first, row.unit)}</td><td>{measure(row.duration, row.unit)}</td>
             </tr>)}</tbody></table></div>
         </div>
       </Panel>
@@ -393,7 +422,7 @@ function Comparison({exp}: {exp: Experiment}) {
   return <Panel title="Baseline / Candidate" icon={<GitFork size={16}/>} actions={<div className="inline">
     <a className="action" href={'/api/experiments/' + exp.id + '?format=md'}><ArrowDownToLine size={13}/> Markdown</a>
     <a className="action" href={'/api/experiments/' + exp.id + '?format=json'}><FileJson size={13}/> JSON</a></div>}>
-    <div className="detail"><p className="quiet">{exp.hypothesis || 'No hypothesis supplied.'}</p>
+    <div className="detail">{exp.name && <h2>{exp.name}</h2>}<p className="quiet">{exp.hypothesis || 'No hypothesis supplied.'}</p>
       <div className="comparison-metrics">{(['p50','p95'] as const).map(metric => {
         const m = exp.latency[metric];
         return <div key={metric}><small>{metric.toUpperCase()} · {exp.latency.label ?? 'UNINSTRUMENTED'}</small><h2>{us(m.baseline)} <span>→</span> {us(m.candidate)}</h2>
@@ -493,7 +522,7 @@ function Diagnosis({profile, experiment, hotspots, query, go, compare}: {profile
   </div>;
 }
 
-function CaptureSummary({profile, canRun, run, importTrace, locate}: {profile?: ProfileInfo; canRun: boolean; run: () => void; importTrace: () => void; locate: () => void}) {
+function CaptureSummary({profile, canRun, run, importTrace, locate, android, paired, runAndroid}: {profile?: ProfileInfo; canRun: boolean; run: () => void; importTrace: () => void; locate: () => void; android?: AndroidStatus; paired: boolean; runAndroid: () => void}) {
   const latency = profile?.latency_us;
   const settings = profile?.conditions;
   const count = settings?.repeats ?? latency?.count;
@@ -503,6 +532,7 @@ function CaptureSummary({profile, canRun, run, importTrace, locate}: {profile?: 
       {profile ? <p>{profile.backend ?? 'Backend unavailable'} · {deviceName(profile.device)} · {profile.provenance}</p> : <p>Select a source model or import a compatible capture.</p>}
       </div><div className="inline">
         <button className="action" disabled={!canRun} onClick={run} title={canRun ? undefined : 'Select an ONNX model and make sure the local ORT runtime is available.'}>Run ORT CPU Profile</button>
+        <button className="action" disabled={!android?.ready || android.busy || !paired} onClick={runAndroid}>Run Android HTP</button>
         <button className="action" onClick={importTrace}>Import QNN Profile</button>
         {!!profile?.operation_event_count && <button className="action primary" onClick={locate}>Locate hotspots <ArrowRight size={14}/></button>}
       </div></div>
@@ -520,7 +550,9 @@ function CaptureSummary({profile, canRun, run, importTrace, locate}: {profile?: 
     </p></details>
     {profile?.backend === 'QNN HTP' && !!profile.operation_event_count && <details><summary>Matrix shape and hardware layout</summary>
       <p className="quiet">GEMV multiplies a matrix by a vector. GEMM multiplies two matrices. Tensor shape and tiling affect how work is arranged on the device. A source MatMul can include compiled layout work. Check the mapped hardware operations before assigning a cause.</p></details>}
-    <details><summary>Run a capture on Android HTP</summary><p className="quiet">Use the local Android runner with a compatible QAIRT SDK, authorized ADB device, DLC or Context and raw inputs.</p>
+    <details open={android?.ready === false || (android?.ready && !paired)}><summary>Android HTP setup</summary><p className="quiet">
+      {android?.ready ? `${[android.device?.model, android.device?.soc, android.device?.hexagon].filter(Boolean).join(' · ')} · ${android.device?.sdk ?? 'QAIRT'}` : android?.reason ?? 'Checking local device and SDK…'}</p>
+      {android?.ready && !paired && <p className="quiet">Register a DLC or Context and pair it with the source ONNX to enable capture.</p>}
       <code>.venv/bin/python -m scripts.run_android_qnn --help</code></details>
   </section>;
 }
@@ -560,6 +592,37 @@ function NotebookPlan({profile, hotspotId, level, back}: {profile: ProfileInfo; 
 type Action = 'import_model' | 'import_profile' | 'import_evidence' | 'run_ort_profile' | 'compare_experiments';
 type DialogOptions = {action: Action; traceFormat?: string};
 
+function FileOrPath({field, label, placeholder, accept, required = false}: {field: string; label: string; placeholder: string; accept?: string; required?: boolean}) {
+  const [picked, setPicked] = useState(false);
+  return <div className="file-choice">
+    <label>{label}<input name={'upload_' + field} type="file" accept={accept} onChange={e => setPicked(Boolean(e.target.files?.length))}/></label>
+    <label>{field === 'filename' ? 'Path relative to runs/inbox' : label + ' path (optional)'}
+      <input name={field} required={required && !picked} placeholder={placeholder}/>
+    </label>
+  </div>;
+}
+
+async function stageSelections(form: FormData, body: Record<string, unknown>) {
+  const files = new Map<string, {file: File; fields: string[]}>();
+  for (const [field, file] of form) {
+    if (!(file instanceof File) || !file.name || !field.startsWith('upload_')) continue;
+    const path = file.webkitRelativePath ? file.webkitRelativePath.split('/').slice(1).join('/') : file.name;
+    const prior = files.get(path);
+    if (prior && (prior.file.size !== file.size || prior.file.lastModified !== file.lastModified)) throw new Error('Two selected files use the same upload path.');
+    const fields = prior?.fields ?? [];
+    if (!field.startsWith('upload_companion')) fields.push(field.slice('upload_'.length));
+    files.set(path, {file: prior && prior.fields.length ? prior.file : file, fields});
+  }
+  if (!files.size) return;
+  const batch = crypto.randomUUID().replaceAll('-', '');
+  for (const [path, {file, fields}] of files) {
+    const result = await api<{filename: string}>(`/inbox/${batch}/${path.split('/').map(encodeURIComponent).join('/')}`, {
+      method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file,
+    });
+    for (const field of fields) body[field] = result.filename;
+  }
+}
+
 function ImportDialog({catalog, modelId, profileId, options, close, done}: {catalog: Catalog; modelId?: string; profileId?: string; options: DialogOptions; close:()=>void; done:(q:Partial<Query>)=>void}) {
   const [action, setAction] = useState<Action>(options.action);
   const [traceFormat, setTraceFormat] = useState(options.traceFormat ?? 'ort-chrome-v1');
@@ -568,7 +631,7 @@ function ImportDialog({catalog, modelId, profileId, options, close, done}: {cata
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const fields = new FormData(e.currentTarget);
-    const args = Object.fromEntries([...fields].filter(([,value]) => value !== ''));
+    const args = Object.fromEntries([...fields].filter(([,value]) => typeof value === 'string' && value !== ''));
     const body: Record<string, unknown> = {...args};
     if (args.fixture) body.fixture = true;
     setBusy(true);
@@ -576,10 +639,11 @@ function ImportDialog({catalog, modelId, profileId, options, close, done}: {cata
     try {
       for (const field of ['warmup', 'repeats', 'trace_runs']) if (args[field] !== undefined) body[field] = Number(args[field]);
       for (const field of ['device', 'conditions', 'compatibility']) if (typeof args[field] === 'string') body[field] = JSON.parse(args[field]);
+      await stageSelections(fields, body);
       const result = await api<{id?:string; profile_id?:string; model_id?:string; artifact?:{id:string; format:string}}>('/tools/' + action, {
         method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
       });
-      if (action === 'import_model') done({view:result.artifact?.format === 'HTP_CONTEXT' ? 'home' : 'graph', model:result.artifact?.id, profile:undefined});
+      if (action === 'import_model') done({view:result.artifact?.format === 'ONNX' ? 'graph' : 'home', model:result.artifact?.id, profile:undefined});
       else if (action === 'import_evidence') done({view:'timeline', profile:result.profile_id, model:undefined});
       else if (action === 'compare_experiments') done({view:'diagnosis', experiment:result.id, profile:String(args.baseline), model:undefined});
       else done({view:'timeline', profile:result.id, model:result.model_id});
@@ -595,18 +659,26 @@ function ImportDialog({catalog, modelId, profileId, options, close, done}: {cata
     <div className="panel-head"><div><FileJson size={16}/> Manage local evidence</div><button className="action" onClick={close}>Close</button></div>
     <form className="detail" onSubmit={submit}>
       <label>Action<select autoFocus value={action} onChange={e => {setAction(e.target.value as Action); setStatus('');}}>
-        <option value="import_profile">Import a profile trace</option><option value="import_evidence">Attach QHAS or HTP Graph</option><option value="import_model">Register ONNX or HTP Context</option>
+        <option value="import_profile">Import a profile trace</option><option value="import_evidence">Attach QHAS or HTP Graph</option><option value="import_model">Register ONNX, DLC or HTP Context</option>
         <option value="run_ort_profile">Run ORT CPU profiling</option><option value="compare_experiments">Compare two profiles</option>
       </select></label>
       {(action === 'import_profile' || action === 'run_ort_profile') && <label>Model<select required name="model_id" defaultValue={modelId}>
         {catalog.models.filter(x => x.format === 'ONNX').map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
       </select></label>}
-      {(action === 'import_model' || action === 'import_profile' || action === 'import_evidence') && <label>Path relative to runs/inbox<input key={action} name="filename" required placeholder={action === 'import_model' ? 'model.onnx' : traceFormat === 'qnn-viewer-csv-v2.50' ? 'profile.csv' : 'profile.json'}/></label>}
+      {(action === 'import_model' || action === 'import_profile' || action === 'import_evidence') && <FileOrPath key={action} field="filename"
+        label={action === 'import_model' ? 'Model file' : action === 'import_profile' ? 'Profile file' : 'Evidence JSON'} required
+        accept={action === 'import_model' ? '.onnx,.dlc,.bin' : '.json,.csv'} placeholder={action === 'import_model' ? 'model.onnx' : traceFormat === 'qnn-viewer-csv-v2.50' ? 'profile.csv' : 'profile.json'}/>}
       {action === 'import_model' && <>
         <label>Display name (optional)<input name="name" placeholder="Model name"/></label>
-        <label>AIMET encodings for ONNX (optional)<input name="encodings" placeholder="model.encodings"/></label>
+        <FileOrPath field="encodings" label="AIMET encodings for ONNX" accept=".encodings,.json" placeholder="model.encodings"/>
+        <label>ONNX external tensors (optional)<input type="file" name="upload_companion" multiple/></label>
+        <details><summary>External tensors in subfolders</summary><p className="quiet">Choose the parent folder of the selected ONNX. Relative tensor paths are preserved.</p>
+          <label>ONNX parent folder<input type="file" name="upload_companion_folder" {...{webkitdirectory:''}}/></label></details>
         <details><summary>HTP Context compatibility</summary><div className="input-fields">
-          <p className="quiet">Register a .bin to record its identity and target. Import its source ONNX separately to browse graph nodes.</p>
+          <p className="quiet">Pair a .bin or .dlc with the source ONNX for analysis and Android capture.</p>
+          <label>Source ONNX for compiled artifact<select name="source_model_id" defaultValue=""><option value="">Unpaired</option>
+            {catalog.models.filter(item => item.format === 'ONNX').map(item => <option value={item.id} key={item.id}>{item.name}</option>)}
+          </select></label>
           <label>Target device (optional)<input name="target_device" placeholder="SM6650"/></label>
           <label>Compatibility JSON (optional)<input name="compatibility" placeholder={'{"hexagon":"V73"}'}/></label>
         </div></details>
@@ -614,8 +686,8 @@ function ImportDialog({catalog, modelId, profileId, options, close, done}: {cata
       {action === 'import_profile' && <>
         <label>Trace format<select name="format" value={traceFormat} onChange={e => setTraceFormat(e.target.value)}><option value="ort-chrome-v1">ORT Chrome Trace</option><option value="qnn-viewer-csv-v2.50">QAIRT 2.50 Basic / Detailed CSV</option><option value="optrace-chrome-v1">Optrace converted Chrome Trace</option><option value="qnn-linting-chrome-v2.50">QAIRT 2.50 HTP Linting Trace</option><option value="qnn-optrace-chrome-v2.50">QAIRT 2.50 HTP Optrace</option></select></label>
         {traceFormat === 'qnn-optrace-chrome-v2.50' ?
-          <label>DLC framework trace CSV (optional)<input name="framework_csv" placeholder="compiled-graph.csv"/></label> :
-          <label>Operation mapping path (optional)<input name="mapping_file" placeholder="mapping.json"/></label>}
+          <FileOrPath key="framework" field="framework_csv" label="DLC framework trace CSV" accept=".csv" placeholder="compiled-graph.csv"/> :
+          <FileOrPath key="mapping" field="mapping_file" label="Operation mapping" accept=".json" placeholder="mapping.json"/>}
         <label className="checkbox"><input type="checkbox" name="fixture"/> Fixture data</label>
         <details><summary>Capture metadata</summary><div className="input-fields">
           <label>Backend (optional)<input name="backend" placeholder="QNN HTP"/></label>
@@ -634,7 +706,8 @@ function ImportDialog({catalog, modelId, profileId, options, close, done}: {cata
           <option value="estimated">Estimated</option><option value="fixture">Fixture</option></select></label>
       </>}
       {action === 'run_ort_profile' && <>
-        <label>Input NPZ path relative to runs/inbox<input name="inputs" required placeholder="inputs.npz"/></label>
+        <div className="file-choice"><label>Input NPZ file<input type="file" name="upload_inputs" accept=".npz"/></label>
+          <label>Input NPZ path relative to runs/inbox<input name="inputs" placeholder="inputs.npz"/></label></div>
         <details><summary>ORT sampling settings</summary><div className="input-fields count-fields">
           <label>Warmup<input name="warmup" type="number" defaultValue={30} min={1} max={100} required/></label>
           <label>Timing samples<input name="repeats" type="number" defaultValue={200} min={2} max={1000} required/></label>
@@ -642,6 +715,7 @@ function ImportDialog({catalog, modelId, profileId, options, close, done}: {cata
         </div></details>
       </>}
       {action === 'compare_experiments' && <>
+        <label>Experiment name (optional)<input name="name" maxLength={120} placeholder="Decode layout A/B"/></label>
         {(['baseline','candidate'] as const).map(key => <label key={key}>{key === 'baseline' ? 'Baseline' : 'Candidate'}<select name={key} required defaultValue={key === 'baseline' ? profileId : undefined}>
           {catalog.profiles.map(p => <option key={p.id} value={p.id}>{optionLabel(p.model_id)} · {p.id.slice(-8)}</option>)}
         </select></label>)}
@@ -649,6 +723,64 @@ function ImportDialog({catalog, modelId, profileId, options, close, done}: {cata
       </>}
       {status && <p role="alert" className="error">{status}</p>}
       <button className="action primary" type="submit" disabled={busy}>{busy ? 'Working…' : 'Run action'}<ArrowRight size={15}/></button>
+    </form>
+  </div></div>;
+}
+
+function AndroidCaptureDialog({artifacts, current, close, done}: {artifacts: Artifact[]; current?: string; close: () => void; done: (profile: ProfileInfo) => void}) {
+  const [selected, setSelected] = useState(artifacts.find(item => item.id === current || item.source_model_id === current)?.id ?? artifacts[0]?.id);
+  const [mode, setMode] = useState('basic');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const artifact = artifacts.find(item => item.id === selected);
+  const source = useData<Graph>(artifact?.source_model_id ? '/models/' + artifact.source_model_id + '/graph' : undefined);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!source?.value || !artifact) return;
+    const form = new FormData(event.currentTarget);
+    const values: Record<string, unknown> = Object.fromEntries([...form].filter(([, value]) => typeof value === 'string' && value !== ''));
+    setBusy(true);
+    setError('');
+    try {
+      await stageSelections(form, values);
+      const inputs = Object.fromEntries(source.value.inputs.map(name => [name, values['raw:' + name]]));
+      const body = {artifact_id:artifact.id, mode, inputs, runs:Number(values.runs), warmup:Number(values.warmup),
+        native_io:values.native_io === 'on', schematic:values.schematic, trace_dlc:values.trace_dlc, framework_csv:values.framework_csv};
+      const result = await api<{profile:ProfileInfo}>('/android/captures', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      done(result.profile);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Android capture failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <div className="overlay"><div className="dialog" role="dialog" aria-modal="true" aria-label="Android HTP capture">
+    <div className="panel-head"><div><Cpu size={16}/> Android HTP capture</div><button className="action" onClick={close} disabled={busy}>Close</button></div>
+    <form className="detail" onSubmit={submit}>
+      <label>Paired DLC or Context<select autoFocus value={selected} onChange={e => {setSelected(e.target.value); setMode('basic'); setError('');}}>
+        {artifacts.map(item => <option key={item.id} value={item.id}>{item.name} · {item.format}</option>)}
+      </select></label>
+      <label>Capture mode<select value={mode} onChange={e => setMode(e.target.value)}>
+        <option value="basic">Basic graph timing</option><option value="detailed">Detailed graph and ops</option><option value="linting">HTP linting</option>
+        {artifact?.format === 'HTP_CONTEXT' && <option value="optrace">Operation trace and dependencies</option>}
+      </select></label>
+      <p className="quiet">{source?.value ? `Source graph ${source.value.artifact.name}` : source?.error ?? 'Reading source graph…'}</p>
+      {source?.value?.inputs.map(name => <div key={source.value!.artifact.id + ':' + name}>
+        <p className="quiet">{source.value!.tensors[name].dtype ?? 'DType unknown'} · {tensorShape(source.value!.tensors[name])}</p>
+        <FileOrPath field={'raw:' + name} label={'Raw file for ' + name} placeholder="input.raw" accept=".raw,.bin" required/>
+      </div>)}
+      {mode === 'optrace' && <>
+        <FileOrPath field="schematic" label="Matching schematic" placeholder="schematic.bin" accept=".bin" required/>
+        <FileOrPath field="trace_dlc" label="Matching framework DLC" placeholder="model.dlc" accept=".dlc"/>
+        <FileOrPath field="framework_csv" label="Framework trace CSV" placeholder="model.csv" accept=".csv"/>
+      </>}
+      <div className="input-fields count-fields" key={mode}>
+        <label>Runs<input name="runs" type="number" required defaultValue={mode === 'optrace' ? 3 : 110} min={1} max={1000}/></label>
+        <label>Warmup<input name="warmup" type="number" required defaultValue={mode === 'optrace' ? 0 : 10} min={0} max={999}/></label>
+      </div>
+      <label className="checkbox"><input type="checkbox" name="native_io"/> Raw inputs use compiled native encodings</label>
+      {error && <p className="error" role="alert">{error}</p>}
+      <button className="action primary" type="submit" disabled={busy || !source?.value}>{busy ? 'Capturing on Android…' : 'Start capture'}</button>
     </form>
   </div></div>;
 }
@@ -662,6 +794,7 @@ function App() {
   const [query, setQuery] = useState(readQuery);
   const [revision, setRevision] = useState(0);
   const [dialog, setDialog] = useState<DialogOptions>();
+  const [captureOpen, setCaptureOpen] = useState(false);
   useEffect(() => {
     const handler = () => setQuery(readQuery());
     window.addEventListener('popstate', handler);
@@ -674,12 +807,13 @@ function App() {
     history.pushState({}, '', '/?' + params);
     setQuery(next);
   }
-  const catalogRequest = useData<Catalog>('/catalog?revision=' + revision);
+  const catalogRequest = useData<Catalog>('/catalog?compact=true&revision=' + revision);
   const catalog = catalogRequest?.value;
   const home = query.view === 'home';
   const capabilities = query.view === 'capabilities';
   const expert = !home && !capabilities;
   const statusRequest = useData<WorkspaceStatus>(expert && query.view !== 'timeline' ? undefined : '/capabilities?revision=' + revision);
+  const androidRequest = useData<AndroidStatus>(query.view === 'timeline' || capabilities ? '/android/status?revision=' + revision : undefined);
   const experiment = catalog?.experiments.find(e => e.id === query.experiment);
   const defaultProfile = expert ? catalog?.profiles.find(p => p.id === (experiment ?? catalog.experiments[0])?.baseline) ?? catalog?.profiles[0] : undefined;
   const chosenProfile = query.profile ? catalog?.profiles.find(p => p.id === query.profile) :
@@ -687,6 +821,7 @@ function App() {
   const modelId = chosenProfile?.model_id ?? query.model ?? (expert ? catalog?.models.find(m => m.format === 'ONNX')?.id : undefined);
   const profileId = query.profile ?? chosenProfile?.id;
   const model = catalog?.models.find(m => m.id === modelId);
+  const pairedArtifacts = catalog?.models.filter(item => item.format !== 'ONNX' && item.source_model_id) ?? [];
   const comparison = query.experiment ? experiment : catalog?.experiments.find(row => row.baseline === profileId || row.candidate === profileId);
   const hasRank = query.view === 'locate' || query.view === 'diagnosis' || query.view === 'optimize';
   const level = query.level === 'node' ? 'node' : 'module';
@@ -730,7 +865,7 @@ function App() {
           if (selected) go({experiment:selected.id, profile:selected.baseline, model:undefined, hotspot:undefined, node:undefined, event:undefined, guide:undefined});
         }}>
           {!comparison && <option value="" disabled>Select an experiment</option>}
-          {catalog.experiments.map(e => <option key={e.id} value={e.id}>{e.id.slice(-8)} · {catalog.models.find(m => m.id === catalog.profiles.find(p => p.id === e.baseline)?.model_id)?.name ?? 'Experiment'}</option>)}
+          {catalog.experiments.map(e => <option key={e.id} value={e.id}>{e.name ?? `${e.id.slice(-8)} · ${catalog.models.find(m => m.id === catalog.profiles.find(p => p.id === e.baseline)?.model_id)?.name ?? 'Experiment'}`}</option>)}
         </select></label>}
         {!!modelChoices.length && <label>Model<select value={model?.id ?? ''} onChange={e => go({model:e.target.value,profile:undefined,experiment:undefined,node:undefined,event:undefined,hotspot:undefined,guide:undefined})}>
           {model?.format === 'HTP_CONTEXT' && <option value={model.id}>{model.name} (HTP Context)</option>}
@@ -746,15 +881,18 @@ function App() {
       </div>}
       {error && <p className="error" role="alert">{error}</p>}
       {home && <WorkspaceHome model={model} profile={chosenProfile} hotspot={query.hotspot} status={statusRequest?.value}
-        statusError={statusRequest?.error} openStep={openStep} openExample={openExample}/>}
-      {capabilities && <Capabilities status={statusRequest?.value} error={statusRequest?.error}
+        statusError={statusRequest?.error} openStep={openStep} openExample={openExample}
+        openSource={model?.source_model_id ? () => go({view:'graph',model:model.source_model_id ?? undefined,profile:undefined}) : undefined}/>}
+      {capabilities && <Capabilities status={statusRequest?.value} error={statusRequest?.error} android={androidRequest?.value}
         showProfile={id => go({view:'timeline',profile:id,model:undefined,experiment:undefined,hotspot:undefined,node:undefined,event:undefined,guide:undefined})}/>}
       {query.guide && expert && <p className="guide-context"><b>Guided analysis</b> · {model?.name} · {chosenProfile?.backend ?? 'Loading measured capture'}</p>}
       {query.view === 'graph' && graph && <GraphView key={graph.artifact.id} graph={graph} profile={profile} query={query} go={go}
         nodeRanks={nodeRequest?.value?.hotspots ?? []} moduleRanks={moduleRequest?.value?.hotspots ?? []}/>}
       {query.view === 'timeline' && <CaptureSummary profile={chosenProfile} canRun={model?.format === 'ONNX' && statusRequest?.value?.ort_cpu_available === true}
         run={() => setDialog({action:'run_ort_profile'})} importTrace={() => setDialog({action:'import_profile',traceFormat:'qnn-viewer-csv-v2.50'})}
-        locate={() => go({view:'locate',level:'module',hotspot:undefined})}/>}
+        locate={() => go({view:'locate',level:'module',hotspot:undefined})}
+        android={androidRequest?.value ?? (androidRequest?.error ? {ready:false,reason:androidRequest.error} : undefined)}
+        paired={pairedArtifacts.length > 0} runAndroid={() => setCaptureOpen(true)}/>}
       {query.view === 'timeline' && profile && (profile.raw_format === 'csv' ?
         <CsvProfile key={profile.id} profile={profile} query={query} go={go}/> :
         <Timeline key={profile.id} profile={profile} query={query} go={go}/>)}
@@ -765,11 +903,16 @@ function App() {
         <Panel title="Claude Code Experiment Plan"><div className="detail"><p>{profileId && !rankingRequest ? 'Loading selected hotspot…' : 'Select a hotspot with operation evidence to generate a task.'}</p>
           <button className="action" onClick={() => go({view:'locate',level:'module'})}>Locate hotspots <ArrowRight size={14}/></button></div></Panel>)}
       {!error && (query.view === 'graph' && !graph || query.view === 'timeline' && !profile) &&
-        <Panel title="Evidence"><p className="detail quiet">{query.view === 'graph' && model?.format === 'HTP_CONTEXT' ? 'Import the source ONNX to open a graph for this HTP Context.' :
+        <Panel title="Evidence"><p className="detail quiet">{query.view === 'graph' && model && model.format !== 'ONNX' ? 'Open the paired source ONNX to browse graph operators.' :
           !catalog || (query.view === 'graph' ? modelId : profileId) ? 'Loading evidence…' : 'Run make demo or import evidence to begin.'}</p></Panel>}
     </main>
     {dialog && catalog && <ImportDialog options={dialog} catalog={catalog} modelId={modelId} profileId={profileId} close={() => setDialog(undefined)}
       done={update => {setRevision(value => value + 1); go({node:undefined, event:undefined, hotspot:undefined, experiment:undefined, guide:undefined, ...update});}}/>}
+    {captureOpen && <AndroidCaptureDialog artifacts={pairedArtifacts} current={modelId} close={() => setCaptureOpen(false)} done={profile => {
+      setCaptureOpen(false);
+      setRevision(value => value + 1);
+      go({view:'timeline',profile:profile.id,model:profile.model_id,experiment:undefined,node:undefined,event:undefined,hotspot:undefined,guide:undefined,blocker:undefined});
+    }}/>}
   </div>;
 }
 

@@ -208,6 +208,9 @@ td button:hover { text-decoration: underline; }
 .plan-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 61vh; border: 1px solid var(--line); padding: 12px; border-radius: 7px; color: inherit; line-height: 1.55; }
 .plan-actions { margin-bottom: 10px; }
 .input-fields { display: grid; gap: 8px; margin-top: 8px; }
+.file-choice { display: grid; gap: 5px; }
+.file-choice input[type=file] { width: 100%; }
+.timeline-tools { margin-top: 10px; }
 .count-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .primary.action { background: var(--blue); color: #14203c; border-color: transparent; }
 .primary.action:hover { filter: brightness(1.1); }

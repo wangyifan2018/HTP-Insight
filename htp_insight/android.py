@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .core import Core, atomic_write, digest, encode
+from .core import Core, atomic_write, digest, digest_file, encode
 from .qnn import optrace_onnx_mappings
 
 MODES = {
@@ -73,7 +73,7 @@ class AndroidRunner:
         for item in args.input:
             name, sep, filename = item.partition("=")
             path = Path(filename).resolve()
-            if not sep or not name or any(char.isspace() for char in name) or name in inputs or not path.is_file():
+            if not sep or not name or ":=" in name or any(char.isspace() for char in name) or name in inputs or not path.is_file():
                 raise ValueError("Use unique --input tensor_name=local.raw entries")
             inputs[name] = path
         if set(inputs) != set(graph.inputs):
@@ -128,7 +128,7 @@ class AndroidRunner:
             dest = f"input-{index}.raw"
             push(path, dest)
             input_entries.append(f"{name}:={remote}/{dest}")
-            state["files"][name] = digest(path.read_bytes())
+            state["files"][name] = digest_file(path)
         atomic_write(work / "input_list.txt", ("\n".join(input_entries) + "\n").encode())
         push(work / "input_list.txt", "input_list.txt")
         filename = "model.dlc" if is_dlc else "model.bin"
@@ -187,8 +187,13 @@ class AndroidRunner:
             "input_sha256": digest(encode(state)), "inputs": state["files"], "native_io": args.native_io,
             "profiling_level": args.mode, "perf_profile": args.perf_profile,
             "capture_protocol": "qnn-net-run Android runner", "warmup": args.warmup, "runs": args.runs,
-            "model_sha256": digest(model.read_bytes()), "model_format": "DLC" if is_dlc else "HTP context",
+            "model_sha256": digest_file(model), "model_format": "DLC" if is_dlc else "HTP context",
         }
+        if compiled_id := getattr(args, "compiled_artifact_id", None):
+            conditions["compiled_artifact_id"] = compiled_id
+        for label, path in (("schematic", args.schematic), ("trace_dlc", args.trace_dlc), ("framework_csv", args.framework_csv)):
+            if path is not None:
+                conditions[label + "_sha256"] = digest_file(path)
         if format == "qnn-viewer-csv-v2.50":
             conditions["repeats"] = args.runs - args.warmup
         else:

@@ -1,8 +1,8 @@
 export type TimeUnit = 'us' | 'cycles';
-export interface Artifact { id: string; name: string; format: string; origin?: string; target_device?: string | null; compatibility?: Record<string, unknown> }
+export interface Artifact { id: string; name: string; format: string; origin?: string; target_device?: string | null; source_model_id?: string | null; compatibility?: Record<string, unknown> }
 export interface Tensor { name: string; shape: Array<number | string | null> | null; dtype: string | null }
 export interface Node { id: string; name: string; op: string; module: string; inputs: string[]; outputs: string[]; predecessors: string[]; quantization: number[] }
-export interface Module { id: string; parent: string; nodes: string[] }
+export interface Module { id: string; parent: string; nodes: string[]; basis?: 'scope' | 'dataflow' | null }
 export interface Quantization { format: string; tensor: string; operation: string | null; dtype: string | null; bitwidth: number | null; scale: number[] | null; axis: number | null; zero_point: number[] | null }
 export interface Graph { artifact: Artifact; architecture: string; nodes: Node[]; tensors: Record<string, Tensor>; inputs: string[]; outputs: string[]; modules: Module[]; quantization: Quantization[]; initializer_elements: number }
 export interface Evidence { id: string; name: string; start: number | null; duration: number | null; recorded_timestamp_us?: number | null; unit: TimeUnit; backend: string | null; track: string | null; resource: string | null; parent: string | null; operation: string | null; kind: string; raw_index: number }
@@ -22,7 +22,7 @@ export interface Explanation extends Hotspot { example_evidence: Evidence; raw_t
 export interface ExperimentPlan { id: string; markdown: string; adaptation: {kind: string; change: string}; profile: ProfileInfo; hotspot: Hotspot }
 interface Metric { baseline: number | null; candidate: number | null; delta_pct: number | null }
 export interface Experiment {
-  id: string; baseline: string; candidate: string; hypothesis: string | null;
+  id: string; baseline: string; candidate: string; hypothesis: string | null; name?: string;
   latency: {p50: Metric; p95: Metric; comparable: boolean; unit: string; label?: string; comparison_issues?: {field: string; problem: string}[]};
   numeric: {passed: boolean; atol: number; rtol: number; error?: string; outputs?: Record<string, {max_abs: number | null; mean_abs: number | null}>} | null;
   graph_diff: {baseline_nodes: number; candidate_nodes: number; edges_added?: unknown[]; edges_removed?: unknown[]; operator_changes: {module: string; domain: string; op: string; baseline: number; candidate: number}[]};
@@ -33,6 +33,7 @@ export interface Experiment {
 export interface Catalog { models: Artifact[]; profiles: ProfileInfo[]; experiments: Experiment[] }
 export interface GuidedExample { model: string; model_id: string; profile_id: string; experiment_id: string; backend: string; device: ProfileInfo['device']; latency: Experiment['latency'] }
 export interface WorkspaceStatus { ort_cpu_available: boolean; measured_captures: {id: string; backend: string; adapter: string | null; source: string}[]; examples: GuidedExample[] }
+export interface AndroidStatus { ready: boolean; busy?: boolean; reason?: string; device?: {model?: string; soc?: string; hexagon?: string; sdk?: string} }
 
 export interface HardwareLane { id: string; core: number; type: string; tid: number }
 export interface HardwareEvent { event_id: string; operation_id: string; name: string; lane_id: string | null; assignment: string; flags: string[]; start: number; end: number; wait_kind: string | null; dominant_path_cycles: number | null; qhas_ids: string[] }

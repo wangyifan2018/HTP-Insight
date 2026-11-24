@@ -39,3 +39,27 @@ def test_shared_web_and_mcp(local, monkeypatch):
     assert client.get(f"/api/profiles/{fixture['id']}/hotspots/{first}/plan").status_code == 422
     assert core.analyze_model_performance(fixture["id"])["next_experiment"] is None
     assert fixture["id"] not in {item["id"] for item in client.get("/api/capabilities").json()["measured_captures"]}
+    compact = client.get("/api/catalog?compact=true").json()
+    assert "samples" not in next(p for p in compact["profiles"] if p["id"] == a["id"])["latency_us"]
+    assert core.profile(a["id"])["latency_us"]["samples"]
+    named = client.post("/api/tools/compare_experiments", json={**comparison, "name": "Local quality"}).json()
+    assert named["name"] == "Local quality" and named["id"] != mcp["comparison"]["id"]
+
+
+def test_local_upload_and_compiled_binding(local, monkeypatch):
+    core, model_id = local
+    monkeypatch.setattr(web, "core", core)
+    client = TestClient(web.app)
+    dest = "/api/inbox/" + "9" * 32 + "/nested/fixture.bin"
+    headers = {"Content-Type": "application/octet-stream", "Origin": "http://testserver"}
+    assert client.post(dest, headers={**headers, "Origin": "https://example.org"}, content=b"blocked").status_code == 403
+    staged = client.post(dest, headers=headers, content=b"fixture context")
+    assert staged.status_code == 200
+    result = client.post("/api/tools/import_model", json={"filename": staged.json()["filename"], "source_model_id": model_id,
+                                                         "target_device": "SM6650", "compatibility": {"hexagon": "v73"}})
+    assert result.status_code == 200
+    artifact = result.json()["artifact"]
+    assert artifact["source_model_id"] == model_id and artifact["format"] == "HTP_CONTEXT"
+    assert core.item(artifact["id"], "context.bin").read_bytes() == b"fixture context"
+    assert client.post(dest, headers=headers, content=b"replacement").status_code == 409
+    assert client.post("/api/android/captures", json={"artifact_id": artifact["id"], "inputs": {}}).status_code == 422

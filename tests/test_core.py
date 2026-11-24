@@ -58,6 +58,20 @@ def test_scoped_transformer_modules(local):
     ]
 
 
+def test_unnamed_attention_uses_dataflow_scope(local):
+    core, _ = local
+    model = h.make_model(h.make_graph([
+        h.make_node("MatMul", ["q", "k"], ["scores"]), h.make_node("Softmax", ["scores"], ["weights"]),
+        h.make_node("MatMul", ["weights", "v"], ["value"]), h.make_node("Identity", ["value"], ["other"]),
+    ], "unnamed", [h.make_tensor_value_info(name, T.FLOAT, [2, 2]) for name in ("q", "k", "v")],
+        [h.make_tensor_value_info("other", T.FLOAT, [2, 2])]))
+    onnx.save(model, core.inbox / "unnamed.onnx")
+    graph = core.graph(core.import_model("unnamed.onnx")["artifact"]["id"])
+    assert graph.architecture == "ONNX graph"
+    assert graph.modules[0].basis == "dataflow" and graph.modules[0].kind == "attention"
+    assert graph.modules[0].nodes == ["n0", "n1", "n2"] and graph.nodes[3].module == "graph"
+
+
 def test_htp_timeline_requires_recorded_flow_for_possible_blocker(local):
     core, model_id = local
 

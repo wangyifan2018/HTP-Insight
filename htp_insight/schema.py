@@ -44,15 +44,17 @@ class SemanticModule(BaseModel):
     kind: str
     parent: str
     nodes: list[str]
+    basis: Literal["scope", "dataflow"] | None = None
 
 
 class ModelArtifact(BaseModel):
     id: str
     sha256: str
     name: str
-    format: Literal["ONNX", "HTP_CONTEXT"]
+    format: Literal["ONNX", "HTP_CONTEXT", "QNN_DLC"]
     origin: str | None = None
     target_device: str | None = None
+    source_model_id: str | None = None
     compatibility: dict = Field(default_factory=dict)
 
 

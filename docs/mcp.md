@@ -18,7 +18,7 @@
 
 | Tool | 参数 | 返回 |
 | --- | --- | --- |
-| `import_model` | `filename`，可选 `encodings`、`name`、`target_device`、`compatibility` | Artifact 和 Graph 链接 |
+| `import_model` | `filename`，可选 `encodings`、`name`、`target_device`、`compatibility`、`source_model_id` | Artifact 和 Graph 链接；DLC/Context 可配对已有源 ONNX |
 | `inspect_graph` | `model_id` | Graph、张量、模块、量化与链接 |
 | `import_profile` | `model_id`、`filename`，可选 `format`、`fixture`、`mapping_file`、版本和运行条件 | Profile ID、来源与 Timeline |
 | `run_ort_profile` | `model_id`、`inputs`，可选 `warmup`、`repeats`、`trace_runs` | CPU 实测摘要、原始 Trace 和 Timeline |
@@ -28,7 +28,7 @@
 | `analyze_model_performance` | `profile_id`、可选 `limit` | 模型、来源、延迟、模块热点、证据缺口和下一项 Notebook 实验 |
 | `generate_experiment_plan` | `profile_id`、`hotspot_id`、可选 `level` | 结构、证据、修改假设、数值检查和 A/B 验收，返回 JSON 与 Markdown |
 | `inspect_htp_timeline` | `profile_id` | QAIRT Optrace 资源实例、张量和 trace 依赖、实测等待、跨通道阻塞候选和 Web 链接 |
-| `compare_experiments` | `baseline`、`candidate`、可选 `hypothesis` | A/B、数值验证、Graph 差异和 Deep Link |
+| `compare_experiments` | `baseline`、`candidate`、可选 `hypothesis`、`name` | A/B、数值验证、Graph 差异和 Deep Link |
 
 导入参数以 `runs/inbox/` 为根路径。接受 JSON 中已定义的字段及有限次数的本地推理。Optrace 导入支持 `optrace-chrome-v1`，QAIRT 2.50 Linting 导入支持 `qnn-linting-chrome-v2.50`。Linting 热点返回 `total_cycles` 及 DSP cycles 单位。真机 `qnn-optrace-chrome-v2.50` 可带 `framework_csv` 导入，以 QAIRT 的 QNN 算子名连接 DLC 来源映射和 ONNX 节点。A/B 可传 `atol` 与 `rtol` 检查已保存输出。可选映射文件的结构示例如下。
 

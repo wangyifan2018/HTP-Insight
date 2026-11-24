@@ -1,18 +1,29 @@
 import inspect
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import TypeAdapter
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .core import ROOT, Core, encode
+from . import android_web
 from .interfaces import operations
+from .uploads import receive
 
 core = Core()
 app = FastAPI(title="HTP Insight")
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
+
+
+@app.middleware("http")
+async def protect_local_writes(request: Request, call_next):
+    if request.method == "POST":
+        origin = request.headers.get("origin")
+        if origin is not None and origin != str(request.base_url).rstrip("/"):
+            return PlainTextResponse("Use the local workspace to submit this request", status_code=403)
+    return await call_next(request)
 
 
 def call(method, *args, **kwargs):
@@ -25,13 +36,28 @@ def call(method, *args, **kwargs):
 
 
 @app.get("/api/catalog")
-def catalog():
-    return core.catalog()
+def catalog(compact: bool = False):
+    return core.catalog(compact=compact)
 
 
 @app.get("/api/capabilities")
 def capabilities():
     return core.workspace_status()
+
+
+@app.post("/api/inbox/{batch}/{filename:path}")
+async def stage_file(batch: str, filename: str, request: Request):
+    return await receive(core.inbox, batch, filename, request)
+
+
+@app.get("/api/android/status")
+def android_status():
+    return android_web.status(core.root)
+
+
+@app.post("/api/android/captures")
+def android_capture(spec: android_web.CaptureRequest):
+    return call(android_web.capture, core, spec)
 
 
 @app.get("/api/models/{model_id}/graph")

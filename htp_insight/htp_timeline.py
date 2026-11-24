@@ -126,26 +126,27 @@ def blockers(events, dependencies):
             if end is not None and end < event["start"]:
                 idle_from[event["event_id"]] = end
             end = max(end, event["end"]) if end is not None else event["end"]
-    matches = defaultdict(list)
+    predecessors = []
+    latest_finish = {}
     for edge in dependencies:
         source, target = (events[edge[key]] for key in ("source", "target"))
+        if source["end"] <= target["start"] and any(row["kind"] in FLOW_KINDS for row in edge["evidence"]):
+            target_id = target["event_id"]
+            latest_finish[target_id] = max(latest_finish.get(target_id, source["end"]), source["end"])
+            predecessors.append((source, target))
+    candidates = []
+    for source, target in predecessors:
         gap_start = idle_from.get(target["event_id"])
         if (gap_start is None or not source["lane_id"] or source["lane_id"] == target["lane_id"]
-                or source["wait_kind"] or target["wait_kind"] or source["end"] > target["start"]
-                or not any(row["kind"] in FLOW_KINDS for row in edge["evidence"])):
+                or source["wait_kind"] or target["wait_kind"] or source["end"] < latest_finish[target["event_id"]]):
             continue
         overlap = source["end"] - max(gap_start, source["start"])
         if overlap > 0:
-            matches[target["event_id"]].append({
+            candidates.append({
                 "source": source["event_id"], "target": target["event_id"], "overlap_cycles": overlap,
                 "idle_from": gap_start, "idle_to": target["start"], "producer_end": source["end"],
                 "after_producer_cycles": target["start"] - source["end"], "status": "possible",
             })
-    # Only the latest finishing recorded cross-lane predecessor can remain the candidate gate.
-    candidates = []
-    for group in matches.values():
-        latest = max(match["producer_end"] for match in group)
-        candidates.extend(row for row in group if row["producer_end"] == latest)
     return sorted(candidates, key=lambda row: (-row["overlap_cycles"], row["after_producer_cycles"], row["source"], row["target"]))
 
 

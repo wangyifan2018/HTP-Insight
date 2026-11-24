@@ -1,5 +1,13 @@
 # Android QAIRT 采集
 
+## 从 Web 启动
+
+先在 **Import** 导入源 ONNX，再登记实际 DLC 或 Context，选中 **Source ONNX for compiled artifact**。可记录目标 SoC 和 `compatibility.hexagon`。进入 **Profile Timeline → Run Android HTP**，选择配对产物和每个输入的 raw 文件。Optrace 还需要匹配的 schematic，可填写 framework trace CSV 和对应 DLC。采集后直接打开真实 Profile。
+
+Web 启动前会核对 ADB 授权、arm64 ABI、QAIRT Android 文件、已知 Hexagon、声明的目标兼容性和输入文件。固定 Shape FP32 输入会核对字节数。Web 使用同一个 `AndroidRunner`，设备执行限制于服务器本地已配置的 SDK 和连接设备。若自动探测不足，可在 `make web` 用 `QAIRT_SDK_ROOT`、`ADB_BIN`、`HTP_INSIGHT_ADB_SERIAL` 与已验证的 `HTP_INSIGHT_ANDROID_ARCH` 配置。
+
+## 从 CLI 启动
+
 运行器把本地 DLC 或 HTP Context、输入和指定 QAIRT 工具放到 ADB 设备的临时目录，调用官方 runner 和 viewer，将原始结果拉回，再由 Core 登记。支持 QAIRT 2.50 的 Android arm64 构建。用 `--serial` 选设备，用 `--htp-arch` 指定已验证的 Hexagon 版本。
 
 ```bash

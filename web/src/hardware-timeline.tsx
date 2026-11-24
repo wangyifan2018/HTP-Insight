@@ -30,8 +30,8 @@ export function DependencyArrows({timeline, selected, blocker, tracks, min, rang
       const row1 = laneIndex.get(source.lane_id ?? 'unassigned');
       const row2 = laneIndex.get(target.lane_id ?? 'unassigned');
       if (row1 == null || row2 == null) return null;
-      const x1 = (source.end - min) / range * 1000;
-      const x2 = (target.start - min) / range * 1000;
+      const x1 = Math.max(0, Math.min(1000, (source.end - min) / range * 1000));
+      const x2 = Math.max(0, Math.min(1000, (target.start - min) / range * 1000));
       const y1 = row1 * 60 + 36;
       const y2 = row2 * 60 + 36;
       const middle = row1 === row2 ? y1 - 16 : (y1 + y2) / 2;

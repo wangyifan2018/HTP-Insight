@@ -243,6 +243,12 @@ try {
     await arrows.uncheck();
     assert.equal(await page.locator('.hardware-arrows').count(), 0);
     await arrows.check();
+    await page.getByLabel('Timeline zoom', {exact:true}).selectOption('16');
+    await page.locator('.track-bars button.possible-blocker').waitFor();
+    const eventSearch = page.getByRole('textbox', {name:'Find timeline operation'});
+    await eventSearch.fill(topBlocker.target);
+    assert.equal(await page.locator('.event-list tbody tr').count(), 1);
+    await eventSearch.clear();
     await page.screenshot({path:resolve(screenshots,'htp-parallelism.png'), fullPage:true});
     checked.push({check:'HTP hardware lanes, dependencies and cross-lane blocker highlight', profile:tinyProfile, source:topBlocker.source, target:topBlocker.target});
     await page.goto(base + '/?' + new URLSearchParams({view:'timeline',profile:tinyProfile,node,event:originalEvent}));
@@ -274,13 +280,20 @@ try {
     }
     await page.goto(base + '/');
     await page.locator('.workflow-grid').getByRole('button', {name:/^Import/}).click();
-    await dialog.getByLabel('Path relative to runs/inbox').fill('tiny-baseline.onnx');
+    const external = resolve(data, 'external-model/tiny.onnx');
+    if (existsSync(external)) {
+      await dialog.getByLabel('Model file', {exact:true}).setInputFiles(external);
+      await dialog.getByText('External tensors in subfolders', {exact:true}).click();
+      await dialog.getByLabel('ONNX parent folder', {exact:true}).setInputFiles(dirname(external));
+    } else {
+      await dialog.getByLabel('Model file', {exact:true}).setInputFiles(resolve(data, 'inbox/tiny-baseline.onnx'));
+    }
     await dialog.getByLabel('Display name').fill('Tiny Transformer · Browser acceptance');
     const model = await submit('import_model');
     await page.getByRole('button', {name:'Profile this model'}).click();
     async function measure() {
       await page.getByRole('button', {name:'Run ORT CPU Profile',exact:true}).click();
-      await dialog.getByLabel('Input NPZ path relative to runs/inbox').fill('tiny-input.npz');
+      await dialog.getByLabel('Input NPZ file', {exact:true}).setInputFiles(resolve(data, 'inbox/tiny-input.npz'));
       await dialog.getByText('ORT sampling settings',{exact:true}).click();
       await dialog.getByLabel('Warmup',{exact:true}).fill('5');
       await dialog.getByLabel('Timing samples',{exact:true}).fill('25');
@@ -298,12 +311,48 @@ try {
     await dialog.getByLabel('Action').selectOption('compare_experiments');
     await dialog.locator('[name=baseline]').selectOption(first.id);
     await dialog.locator('[name=candidate]').selectOption(second.id);
+    await dialog.getByLabel('Experiment name (optional)').fill('Browser acceptance A/A');
     await dialog.getByLabel('Hypothesis').fill('A/A: identical ONNX and inputs');
     const ab = await submit('compare_experiments');
     assert.equal(ab.latency.comparable, true);
     assert.equal(ab.numeric.passed, true);
+    assert.equal(ab.name, 'Browser acceptance A/A');
     await page.getByText('Output validation', {exact:true}).waitFor();
-    checked.push({check:'Web import, real ORT measurements and same-model A/A', model:model.artifact.id, baseline:first.id, candidate:second.id, experiment:ab.id});
+    checked.push({check:'Web import, real ORT measurements and same-model A/A', external_tensors:existsSync(external), model:model.artifact.id, baseline:first.id, candidate:second.id, experiment:ab.id});
+  }
+  if (process.env.HTP_INSIGHT_BROWSER_ANDROID === '1') {
+    const tiny = catalog.models.find(row => row.name === 'Tiny Transformer · Baseline · HTP W8A16');
+    assert.ok(tiny);
+    await page.goto(base + '/');
+    await page.locator('.workflow-grid').getByRole('button', {name:/^Import/}).click();
+    await dialog.getByLabel('Model file', {exact:true}).setInputFiles(resolve(data, 'android-tiny/baseline/aimet-w8a16.dlc'));
+    await dialog.getByLabel('Display name').fill('Tiny Transformer · Web QAIRT Capture');
+    await dialog.getByText('HTP Context compatibility', {exact:true}).click();
+    await dialog.getByLabel('Source ONNX for compiled artifact').selectOption(tiny.id);
+    await dialog.getByLabel('Target device (optional)').fill('SM6650');
+    const bindingResponse = page.waitForResponse(response => response.url().endsWith('/tools/import_model') && response.status() === 200);
+    await dialog.getByRole('button', {name:'Run action',exact:true}).click();
+    const {artifact} = await (await bindingResponse).json();
+    assert.equal(artifact.source_model_id, tiny.id);
+    await page.getByRole('button', {name:'Open paired source ONNX'}).click();
+    await page.getByRole('button', {name:'Profile this model'}).click();
+    await page.getByRole('button', {name:'Run Android HTP',exact:true}).click();
+    const device = page.getByRole('dialog', {name:'Android HTP capture'});
+    await device.getByLabel('Paired DLC or Context').selectOption(artifact.id);
+    await device.getByLabel('Raw file for hidden', {exact:true}).setInputFiles(resolve(data, 'android-tiny/inputs/hidden-0.raw'));
+    await device.getByLabel('Runs', {exact:true}).fill('12');
+    await device.getByLabel('Warmup', {exact:true}).fill('2');
+    const capturing = page.waitForResponse(response => response.url().endsWith('/android/captures'), {timeout:90000});
+    await device.getByRole('button', {name:'Start capture'}).click();
+    const response = await capturing;
+    assert.equal(response.status(), 200, await response.text());
+    const {profile} = await response.json();
+    assert.equal(profile.provenance, 'measured');
+    assert.equal(profile.backend, 'QNN HTP');
+    assert.equal(profile.model_id, tiny.id);
+    assert.equal(profile.conditions.repeats, 10);
+    await page.getByText(/QNN HTP.+measured/).first().waitFor();
+    checked.push({check:'Upload DLC, bind source ONNX and run actual Android HTP from Web', artifact:artifact.id, profile:profile.id});
   }
   assert.deepEqual(errors, []);
   writeFileSync(resolve(screenshots,'browser.json'), JSON.stringify({browser:'Chromium ' + version, experiment:demo.id, checked, errors},null,2));
