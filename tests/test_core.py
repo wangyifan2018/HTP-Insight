@@ -42,6 +42,22 @@ def test_model_and_qdq(local):
         core.import_model("../test.onnx")
 
 
+def test_scoped_transformer_modules(local):
+    core, _ = local
+    model = h.make_model(h.make_graph([
+        h.make_node("Identity", ["x"], ["a"], name="/model/layers.0/self_attn/Identity"),
+        h.make_node("Identity", ["a"], ["b"], name="/model/layers.1/self_attn/Identity"),
+        h.make_node("Identity", ["b"], ["y"], name="/model/layers.1/mlp/Identity"),
+    ], "scoped", [h.make_tensor_value_info("x", T.FLOAT, [1, 2])],
+        [h.make_tensor_value_info("y", T.FLOAT, [1, 2])]))
+    onnx.save(model, core.inbox / "scoped.onnx")
+    graph = core.graph(core.import_model("scoped.onnx")["artifact"]["id"])
+    assert graph.architecture == "Transformer"
+    assert [(module.id, module.parent) for module in graph.modules] == [
+        ("layer.0.attention", "layer.0"), ("layer.1.attention", "layer.1"), ("layer.1.mlp", "layer.1"),
+    ]
+
+
 @pytest.mark.parametrize("records", [
     {"x": [{"bitwidth": 8, "dtype": "int", "scale": .25}]},
     [{"name": "x", "bw": 8, "dtype": "INT", "scale": [.25]}],

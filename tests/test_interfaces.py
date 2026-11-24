@@ -18,6 +18,9 @@ def test_shared_web_and_mcp(local, monkeypatch):
     client = TestClient(web.app)
     response = client.get(f"/api/profiles/{a['id']}/hotspots")
     assert response.json() == mcp["hotspots"]
+    status = client.get("/api/capabilities").json()
+    assert status["ort_cpu_available"]
+    assert status["examples"][0]["experiment_id"] == mcp["comparison"]["id"]
     event = mcp["explanation"]["example_evidence"]["id"]
     assert client.get(f"/api/profiles/{a['id']}/events/{event}").json()["raw"]["cat"] == "Node"
     assert client.post("/api/tools/compare_experiments", json=comparison).json() == mcp["comparison"]
@@ -35,3 +38,4 @@ def test_shared_web_and_mcp(local, monkeypatch):
     first = core.get_hotspots(fixture["id"])["hotspots"][0]["id"]
     assert client.get(f"/api/profiles/{fixture['id']}/hotspots/{first}/plan").status_code == 422
     assert core.analyze_model_performance(fixture["id"])["next_experiment"] is None
+    assert fixture["id"] not in {item["id"] for item in client.get("/api/capabilities").json()["measured_captures"]}

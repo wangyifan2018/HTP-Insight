@@ -20,6 +20,49 @@ page.on('pageerror', error => errors.push(error.message));
 page.on('response', response => { if (response.status() >= 400) errors.push(response.status() + ' ' + response.url()); });
 const checked = [];
 try {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], {origin:base});
+  await page.emulateMedia({colorScheme:'dark'});
+  await page.goto(base + '/');
+  await page.getByRole('heading', {name:'Analysis workflow'}).waitFor();
+  assert.deepEqual(await page.locator('.workflow-grid b').allTextContents(), ['Import', 'Profile', 'Locate', 'Diagnose', 'Optimize']);
+  await page.screenshot({path:resolve(screenshots,'workspace-workflow.png'),fullPage:true});
+  const workflowImport = page.locator('.workflow-grid').getByRole('button', {name:/^Import/});
+  await workflowImport.click();
+  const dialog = page.getByRole('dialog', {name:'Manage local evidence'});
+  await dialog.waitFor();
+  assert.equal(await dialog.getByLabel('Action').inputValue(), 'import_model');
+  await dialog.getByRole('button', {name:'Close'}).click();
+  await page.getByRole('button', {name:'System Status'}).click();
+  await page.getByText('Available locally', {exact:true}).waitFor();
+  await page.getByRole('heading', {name:'Linux / SSH capture'}).waitFor();
+  await page.getByRole('button', {name:'Workspace', exact:true}).click();
+  await page.getByRole('button', {name:/Explore (Mac ORT|ORT CPU) recording/}).click();
+  await page.getByRole('heading', {name:'Performance capture'}).waitFor();
+  assert.match(await page.locator('.capture-header p').textContent(), /CPUExecutionProvider.*measured/);
+  await page.getByRole('button', {name:'Locate hotspots',exact:true}).click();
+  await page.getByRole('heading', {name:'Locate Hotspots',exact:true}).waitFor();
+  await page.getByRole('button', {name:'Diagnose hotspot'}).click();
+  await page.getByText('Inferred mapping', {exact:true}).waitFor();
+  await page.getByRole('button', {name:'Generate Claude Code Experiment Plan'}).click();
+  const notebook = page.getByLabel('Notebook task Markdown');
+  await notebook.waitFor();
+  const markdown = await notebook.textContent();
+  assert.match(markdown, /CPUExecutionProvider/);
+  assert.match(markdown, /Numerical and A\/B acceptance/);
+  await page.getByRole('button', {name:'Copy Markdown'}).click();
+  await page.getByText('Markdown copied.', {exact:true}).waitFor();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), markdown);
+  for (const format of ['Markdown','JSON']) {
+    const downloading = page.waitForEvent('download');
+    await page.getByRole('link', {name:format,exact:true}).click();
+    const downloaded = await downloading;
+    const content = readFileSync(await downloaded.path(), 'utf8');
+    assert.equal(format === 'Markdown' ? content : JSON.parse(content).markdown, markdown);
+  }
+  await page.emulateMedia({colorScheme:'light'});
+  await page.screenshot({path:resolve(screenshots,'notebook-plan.png'),fullPage:true});
+  checked.push({check:'Guided measured CPU workflow, capabilities, copy and both Notebook task exports'});
+
   const profileResponse = await page.request.get(base + '/api/profiles/' + demo.baseline);
   assert.ok(profileResponse.ok());
   const profile = await profileResponse.json();
@@ -27,6 +70,12 @@ try {
   await page.goto(base + '/?' + baseline);
   await page.getByRole('heading', {name:'Graph Explorer'}).waitFor();
   await page.getByText('Top measured module', {exact:true}).waitFor();
+  const search = page.getByRole('textbox', {name:'Search modules or operators'});
+  await search.fill('not-a-real-operator');
+  await page.getByText('No matching module or operator.', {exact:true}).waitFor();
+  await search.fill('attention');
+  await page.locator('.tree').getByText('Attention', {exact:true}).waitFor();
+  await search.clear();
   const locate = page.getByRole('button', {name:'Locate in timeline'});
   await locate.waitFor();
   await page.screenshot({path:resolve(screenshots,'graph.png'), fullPage:true});
@@ -48,7 +97,7 @@ try {
   await returnLink.click();
   await page.locator(`.graph-node.selected[data-node="${targetNode}"]`).waitFor();
   assert.equal(new URL(page.url()).searchParams.get('node'), targetNode);
-  checked.push({check:'Graph → Timeline → Graph', model:profile.model_id, initial_node:picked, event, return_node:targetNode});
+  checked.push({check:'Module search and Graph → Timeline → Graph', model:profile.model_id, initial_node:picked, event, return_node:targetNode});
   const diagnosis = new URLSearchParams({view:'diagnosis',profile:demo.baseline,experiment:demo.id});
   await page.goto(base + '/?' + diagnosis);
   await page.getByText('Output validation', {exact:true}).waitFor();
@@ -151,6 +200,14 @@ try {
     await page.getByText('NetRun graph execute (Basic Profile)', {exact:false}).first().waitFor();
     await page.getByText('Output validation', {exact:true}).waitFor();
     await page.getByText('Passed', {exact:true}).waitFor();
+    await page.getByRole('button', {name:'Generate Claude Code Experiment Plan'}).click();
+    const plan = page.getByLabel('Notebook task Markdown');
+    await plan.waitFor();
+    assert.match(await plan.textContent(), /flatten batch and head/);
+    assert.match(await plan.textContent(), /QNN HTP/);
+    assert.match(await plan.textContent(), /e205/);
+    await page.getByRole('button', {name:'Back to diagnosis'}).click();
+    checked.push({check:'Android Attention task uses mapped score layout and real event evidence', profile:tinyProfile});
     const openEvidence = page.getByRole('button', {name:'Open trace evidence'});
     await openEvidence.waitFor();
     await page.screenshot({path:resolve(screenshots,'tiny-htp-comparison.png'), fullPage:true});
@@ -173,6 +230,49 @@ try {
     await returnToGraph.click();
     await page.locator(`.graph-node.selected[data-node="${node}"]`).waitFor();
     checked.push({check:'Tiny Transformer W8A16 HTP A/B and Attention mapping', profile:tinyProfile, experiment:comparison.id, node});
+  }
+  if (process.env.HTP_INSIGHT_BROWSER_ACCEPTANCE === '1') {
+    // Run against a separate data directory prepared by examples.demo --tiny-only.
+    async function submit(action) {
+      const next = page.waitForResponse(response => response.url() === base + '/api/tools/' + action && response.request().method() === 'POST');
+      await dialog.getByRole('button', {name:'Run action',exact:true}).click();
+      const response = await next;
+      assert.equal(response.status(), 200, await response.text());
+      await dialog.waitFor({state:'hidden'});
+      return response.json();
+    }
+    await page.goto(base + '/');
+    await page.locator('.workflow-grid').getByRole('button', {name:/^Import/}).click();
+    await dialog.getByLabel('Path relative to runs/inbox').fill('tiny-baseline.onnx');
+    await dialog.getByLabel('Display name').fill('Tiny Transformer · Browser acceptance');
+    const model = await submit('import_model');
+    await page.getByRole('button', {name:'Profile this model'}).click();
+    async function measure() {
+      await page.getByRole('button', {name:'Run ORT CPU Profile',exact:true}).click();
+      await dialog.getByLabel('Input NPZ path relative to runs/inbox').fill('tiny-input.npz');
+      await dialog.getByText('ORT sampling settings',{exact:true}).click();
+      await dialog.getByLabel('Warmup',{exact:true}).fill('5');
+      await dialog.getByLabel('Timing samples',{exact:true}).fill('25');
+      const capture = await submit('run_ort_profile');
+      assert.equal(capture.model_id, model.artifact.id);
+      assert.equal(capture.provenance, 'measured');
+      assert.equal(capture.conditions.repeats, 25);
+      assert.ok(capture.latency_us.p50 > 0);
+      return capture;
+    }
+    const first = await measure();
+    const second = await measure();
+    assert.notEqual(first.id, second.id);
+    await page.getByRole('button', {name:'Manage evidence'}).click();
+    await dialog.getByLabel('Action').selectOption('compare_experiments');
+    await dialog.locator('[name=baseline]').selectOption(first.id);
+    await dialog.locator('[name=candidate]').selectOption(second.id);
+    await dialog.getByLabel('Hypothesis').fill('A/A: identical ONNX and inputs');
+    const ab = await submit('compare_experiments');
+    assert.equal(ab.latency.comparable, true);
+    assert.equal(ab.numeric.passed, true);
+    await page.getByText('Output validation', {exact:true}).waitFor();
+    checked.push({check:'Web import, real ORT measurements and same-model A/A', model:model.artifact.id, baseline:first.id, candidate:second.id, experiment:ab.id});
   }
   assert.deepEqual(errors, []);
   writeFileSync(resolve(screenshots,'browser.json'), JSON.stringify({browser:'Chromium ' + version, experiment:demo.id, checked, errors},null,2));

@@ -66,9 +66,15 @@ def parse_encodings(data):
 
 def module_name(node):
     tokens = [value for value in node.name.split("/") if value]
+    layer = re.search(r"(?:^|[/.])(?:layers?|blocks?|h)[/.](\d+)(?=[/.])", node.name)
+    aliases = {"self_attn": "attention", "self_attention": "attention", "attn": "attention",
+               "feed_forward": "mlp", "ffn": "mlp"}
     for token in tokens[:-1]:
+        token = aliases.get(token, token)
         if token in {"input_projection", "attention", "mlp", "output_projection", "residual_attn", "residual_mlp"}:
-            return token
+            return f"layer.{layer[1]}.{token}" if layer else token
+    if layer:
+        return f"layer.{layer[1]}.other"
     for names in ([node.name], node.output, node.input):
         features = {match.group(1) for name in names for match in re.finditer(r"(?:^|[./_])features[./](\d+)(?=[./_]|$)", name)}
         if len(features) == 1:
@@ -148,10 +154,12 @@ def inspect(model, artifact: ModelArtifact, encodings=None):
             predecessors=list(dict.fromkeys(producer[name] for name in node.input if name in producer)),
             quantization=sorted({idx for name in [*node.input, *node.output] for idx in quant_index[name]}),
         ))
-    architecture = "Transformer" if "attention" in modules and "mlp" in modules else "ONNX graph"
+    kinds = {name.rsplit(".", 1)[-1] for name in modules}
+    architecture = "Transformer" if {"attention", "mlp"} <= kinds else "ONNX graph"
     return Graph(
         artifact=artifact, architecture=architecture, nodes=nodes, tensors=tensors,
-        modules=[SemanticModule(id=name, kind=name.split(".")[0], parent=architecture, nodes=ids)
+        modules=[SemanticModule(id=name, kind=name.rsplit(".", 1)[-1] if name.startswith("layer.") else name.split(".")[0],
+                                parent=name.rsplit(".", 1)[0] if name.startswith("layer.") else architecture, nodes=ids)
                  for name, ids in modules.items()],
         inputs=[v.name for v in graph.input if v.name not in constants], outputs=[v.name for v in graph.output],
         initializer_elements=sum(prod(t.dims) for t in graph.initializer),

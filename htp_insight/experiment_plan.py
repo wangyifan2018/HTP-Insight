@@ -13,9 +13,9 @@ def adaptation(graph, hotspot, session):
 
     by_id = {node.id: node for node in graph.nodes}
     # Identify QK^T by its dataflow into Softmax, optionally through score scaling.
-    if htp and hotspot["module"] == "attention":
+    if htp and hotspot["module"].rsplit(".", 1)[-1] == "attention":
         for softmax in graph.nodes:
-            if softmax.op != "Softmax" or softmax.module != "attention":
+            if softmax.op != "Softmax" or softmax.module != hotspot["module"]:
                 continue
             for parent in softmax.predecessors:
                 scale = by_id[parent]
@@ -65,9 +65,9 @@ def validation(session):
             "capture": capture,
             "matched_conditions": ["backend and device", "SDK or runtime version", "input digest and shapes",
                                    "precision and I/O", "warmup and retained samples", "profiling level and performance settings"],
-            "paired_blocks": 6, "minimum_p50_wins": 5, "minimum_p50_improvement_pct": 5,
+            "aa_blocks": 3, "paired_blocks": 6, "minimum_p50_wins": 5, "minimum_p50_improvement_pct": 5,
             "maximum_p95_increase_pct": 2,
-            "decision": "Require numerical agreement, p50 improvement above the measured A/A variation and at least 5% in aggregate, p50 wins in at least 5 of 6 paired blocks, and at most 2% increase in p95. Record inconclusive results if variability or missing matched evidence prevents a decision.",
+            "decision": "Use 3 A/A blocks to estimate run-to-run variation, then alternate AB and BA across 6 fresh paired blocks. Require numerical agreement, p50 improvement above the measured A/A variation and at least 5% in aggregate, p50 wins in at least 5 of 6 paired blocks, and at most 2% increase in p95. Record inconclusive results if variability or missing matched evidence prevents a decision.",
         },
         "reimport": reimport + " Use compare_experiments on the matched Profile IDs and report graph changes and output verification.",
     }
@@ -99,7 +99,7 @@ def markdown(plan):
         event = evidence["event"]
         lines.append(f"- [{event['id']}]({evidence['deep_link']}) · {event['name']} · {event['duration']} {event['unit']} · {event['resource'] or 'Resource unavailable'} · [Original record]({evidence['raw_url']})")
         if evidence["artifacts"]:
-            lines.extend(f"  - [{item['artifact_type']}]({item['link']}) (`{item['id']}`)" for item in evidence["artifacts"])
+            lines.extend(f"  - [{item['artifact_type']}]({item['link']}) · {item['provenance']} (`{item['id']}`)" for item in evidence["artifacts"])
     lines.extend(["", "## Source structure and mapping", "", plan["mapping"], ""])
     lines.append(f"Graph: {model['node_count']} nodes, {model['initializer_elements']} initializer elements, quantization annotations {', '.join(model['quantization_formats']) or 'unavailable'}.")
     for node in plan["nodes"]:

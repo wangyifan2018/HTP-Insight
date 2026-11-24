@@ -136,6 +136,7 @@ class Core:
     def profile_summary(self, session):
         return {
             **session.model_dump(exclude={"events", "mappings"}), "event_count": len(session.events),
+            "operation_event_count": sum(event.kind == "node" and event.duration is not None for event in session.events),
             "deep_link": self.link("timeline", profile=session.id), "raw_trace": f"/api/profiles/{session.id}/raw",
         }
 
@@ -265,7 +266,7 @@ class Core:
         operation_ids = {event.operation for event in session.events if event.id in evidence_ids}
         mappings = [mapping for mapping in session.mappings if operation_ids.intersection(mapping.operation_ids)]
         mapping_proof = [mapping.model_dump() for mapping in mappings if mapping.evidence]
-        return {
+        result = {
             **hotspot.model_dump(), "mapping_proof": mapping_proof, "source": session.source, "backend": session.backend, "provenance": session.provenance,
             "mapping_methods": sorted({mapping.method for mapping in mappings}),
             "nodes": [{**node.model_dump(), "input_tensors": [model.tensors[t].model_dump() for t in node.inputs if t],
@@ -277,6 +278,9 @@ class Core:
             "hypothesis": suggestion.model_dump(),
             "deep_link": self.link("timeline", profile=profile_id, event=first_event.id),
         }
+        if session.backend == experiment_plan.HTP_BACKEND:
+            result["experiment_hint"] = experiment_plan.adaptation(model, result, session)
+        return result
 
     def generate_experiment_plan(self, profile_id: str, hotspot_id: str, level: str = "module") -> dict[str, Any]:
         session = self.session(profile_id)
@@ -284,7 +288,7 @@ class Core:
             raise ValueError("An experiment plan requires a real capture. Fixture timings are excluded.")
         model = self.graph(session.model_id)
         hotspot = self.explain_hotspot(profile_id, hotspot_id, level)
-        adaptation = experiment_plan.adaptation(model, hotspot, session)
+        adaptation = hotspot.get("experiment_hint") or experiment_plan.adaptation(model, hotspot, session)
         target = adaptation.get("target_node")
         target_operations = {operation for mapping in session.mappings if target in mapping.node_ids for operation in mapping.operation_ids}
         evidence_ids = set(hotspot["evidence_ids"])
@@ -297,7 +301,7 @@ class Core:
                 "event": event.model_dump(),
                 "deep_link": self.link("timeline", profile=profile_id, event=event.id),
                 "raw_url": f"{self.web_url}/api/profiles/{profile_id}/events/{event.id}",
-                "artifacts": [{**item, "link": self.web_url + item["raw"]} for item in artifacts],
+                "artifacts": [{**item, "link": self.web_url + item["raw"]} for item in artifacts if item["provenance"] != "fixture"],
             })
         if hotspot["mapping_proof"]:
             mapping = "Source mapping is supported by the provided compiler records. Inspect the operation-to-node links and keep unmatched work Unknown."
@@ -326,11 +330,11 @@ class Core:
     def analyze_model_performance(self, profile_id: str, limit: int = 5) -> dict[str, Any]:
         if not 1 <= limit <= 20:
             raise ValueError("Limit must be 1–20")
-        measured = self.get_hotspots(profile_id, limit=limit)
+        ranking = self.get_hotspots(profile_id, limit=limit)
         session = self.session(profile_id)
         model = self.graph(session.model_id)
-        top = next((row for row in measured["hotspots"] if row["node_ids"] and row["module"] != "Shared"), None)
-        priority = top or (measured["hotspots"][0] if measured["hotspots"] else None)
+        top = next((row for row in ranking["hotspots"] if row["node_ids"] and row["module"] != "Shared"), None)
+        priority = top or (ranking["hotspots"][0] if ranking["hotspots"] else None)
         pending = []
         plan = None
         if session.provenance == "fixture":
@@ -341,10 +345,10 @@ class Core:
             pending.append("Collect mapped operation events before attributing costs to the source graph.")
         if not session.latency_us:
             pending.append("Collect matched graph execution samples to obtain p50 and p95.")
-        if any(row["module"] in {"Shared", "Unknown"} for row in measured["hotspots"]):
+        if any(row["module"] in {"Shared", "Unknown"} for row in ranking["hotspots"]):
             pending.append("Inspect shared or Unknown work using source mapping evidence.")
         latency = {key: value for key, value in session.latency_us.items() if key != "samples"} if session.latency_us else None
-        return {**measured, "model": model.artifact.model_dump(), "profile": {
+        return {**ranking, "model": model.artifact.model_dump(), "profile": {
             "id": profile_id, "device": session.device, "profiler_version": session.profiler_version,
             "conditions": session.conditions, "latency_us": latency, "deep_link": self.link("timeline", profile=profile_id),
         }, "investigate": pending, "next_experiment": plan}
@@ -439,6 +443,34 @@ class Core:
         } | {"profiles": [self.profile_summary(ProfileSession.model_validate_json(path.read_bytes()))
                          for path in sorted((self.root / "store").glob("profile-*/profile.json"),
                                             key=lambda entry: entry.stat().st_mtime, reverse=True)]}
+
+    def workspace_status(self):
+        catalog = self.catalog()
+        models = {model["id"]: model for model in catalog["models"]}
+        measured = {profile["id"]: profile for profile in catalog["profiles"] if profile["provenance"] == "measured"}
+        ort_available = "CPUExecutionProvider" in profiles.ort.get_available_providers()
+        examples = []
+        for backend in ("CPUExecutionProvider", "QNN HTP"):
+            eligible = [experiment for experiment in catalog["experiments"]
+                        if experiment["baseline"] in measured and experiment["candidate"] in measured
+                        and measured[experiment["baseline"]]["backend"] == backend
+                        and measured[experiment["baseline"]]["model_id"] in models
+                        and experiment["latency"]["comparable"] and (experiment["numeric"] or {}).get("passed")]
+            if not eligible:
+                continue
+            experiment = max(eligible, key=lambda row: (
+                models[measured[row["baseline"]]["model_id"]]["name"].startswith("Tiny Transformer"),
+                measured[row["baseline"]]["conditions"].get("repeats") or 0,
+            ))
+            profile = measured[experiment["baseline"]]
+            model = models[profile["model_id"]]
+            examples.append({
+                "model": model["name"], "model_id": model["id"], "profile_id": profile["id"],
+                "experiment_id": experiment["id"], "backend": backend, "device": profile["device"], "latency": experiment["latency"],
+            })
+        captures = [{"id": profile["id"], "adapter": profile["conditions"].get("adapter"),
+                     "backend": profile["backend"], "source": profile["source"]} for profile in measured.values()]
+        return {"ort_cpu_available": ort_available, "measured_captures": captures, "examples": examples}
 
     def report(self, experiment_id):
         exp = self.read(experiment_id, "experiment.json")

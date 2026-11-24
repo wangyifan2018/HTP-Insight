@@ -29,6 +29,11 @@ def catalog():
     return core.catalog()
 
 
+@app.get("/api/capabilities")
+def capabilities():
+    return core.workspace_status()
+
+
 @app.get("/api/models/{model_id}/graph")
 def model_graph(model_id: str):
     return call(core.inspect_graph, model_id)

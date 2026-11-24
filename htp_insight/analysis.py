@@ -58,7 +58,7 @@ def rank(graph, session, level):
 def hypothesis(module, ops):
     metrics = ["Uninstrumented p50 and p95 on identical inputs", "Per-module trace duration and operation count",
                "Output allclose and maximum absolute error"]
-    if module == "attention":
+    if module.rsplit(".", 1)[-1] == "attention":
         return OptimizationHypothesis(
             mechanism="Separate Q, K and V projections may increase dispatch work and reread the same input.",
             adaptation="Concatenate Q, K and V weights and biases, execute one projection, and split its output.",
