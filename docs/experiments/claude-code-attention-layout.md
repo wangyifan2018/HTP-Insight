@@ -53,3 +53,11 @@
 在 `runs/inbox/` 用唯一实验文件名暂存 Candidate ONNX 和 Encodings，经 CLI 或 MCP `import_model` 注册。用 `.venv/bin/python -m scripts.run_android_qnn --mode basic` 采集时传入对应 `--model-id`，保存各块 `capture.json`。用 `--mode optrace --schematic ... --trace-dlc ... --framework-csv ...` 登记匹配的 Optrace、QHAS 和 HTP Graph。已有真实导出也可经 `import_profile` 使用 `qnn-viewer-csv-v2.50` 或 `qnn-optrace-chrome-v2.50` 导入，再用 `import_evidence` 附加 JSON。用 `compare_experiments` 比较每块的匹配 Basic Profile。跨块分位数从各块保留的真实样本汇总。Android Basic Profile 未登记输出时，Core 的 `numeric` 可为空，在报告中引用单独的 8 样本数值验证工件。 [CLI 和 MCP 参数](../mcp.md)
 
 用实际 MCP 客户端核对 `get_hotspots`、`explain_hotspot` 和 `profile_event`。在 Web 用新 Profile ID 回到同一 HTP 操作的源码映射和原始证据。交付可执行的适配 Notebook、ONNX 图差异、FP32 与量化数值报告、原始采集、机器可读 A/B 指标及 Markdown 结论。结论须包含模型和 Profile ID、证据深链接、数值判定、p50/p95 判定及布局假设是否得到支持。只在对应工件实际生成后填写新结果。
+
+## 2026-11-24 实际验收
+
+执行 `.venv/bin/python scripts/run_notebook.py --attention-layout` 复用原始 Tiny Transformer 权重。评分 MatMul 的两个输入秩均由 4 降为 3。八组留出数据的 unscaled scores 和 logits 在两份 ONNX 之间逐元素一致，各自与 PyTorch 的最大 logits 绝对误差为 7.15×10⁻⁷。设备 W8A16 与各自参考之间的最大绝对误差为 0.01388，逐组通过。AIMET 使用同一组 48 个校准输入。两侧的输入、输出与评分 MatMul Activation 编码为 uint16，对应 scale 和量化轴一致。Baseline ONNX 的 SHA-256 与已实测 DLC 对应的源图一致。 [可执行 Notebook](../../examples/attention_layout.ipynb) · [执行结果](../../runs/attention-score-layout/adaptation.executed.ipynb) · [FP32 数值工件](../../runs/tiny-attention-layout-fp32.json)
+
+运行 `.venv/bin/python -m scripts.run_tiny_attention_ab --sdk runs/qairt/sdk/2.50.40.260831`。先跑 3 组 A/A，再以 AB、BA 交替跑 6 组，每组每版保留 100 次 NetRun Basic 样本。汇总 p50 为 **1817.50 → 1788.00 µs（−1.62%）**，p95 为 **2359.95 → 2309.15 µs（−2.15%）**，p50 在 4/6 配对更低。A/A 最大配对波动为 p50 **17.27%**、p95 **6.29%**，未达到性能通过门槛。这批记录缺少块级电池温度，采集脚本已加入前后温度记录。各块作为命名实验登记。 [六组原始统计与实验 ID](../../runs/attention-score-layout/paired-results.json) · [设备数值核对](../../runs/attention-score-layout/numeric.json) · [第一组 Web A/B](http://127.0.0.1:8000/?view=diagnosis&experiment=experiment-4bcfe3c27c65ac2c28faefbf&profile=profile-fd2007dbc306a75f1fb8f42c)
+
+另采两侧 Optrace，评分 MatMul 归因的操作周期和为 **69,534 → 63,877 cycles**，整个 Attention 的操作周期和为 **132,787 → 125,963 cycles**。两份 Trace 均有 164 条去重事件和 18 个可能跨通道阻塞。操作周期和包括并行执行，只用于局部分析。 [Baseline Optrace](http://127.0.0.1:8000/?view=timeline&profile=profile-7575595108ed18a3eab5f23c) · [Rank-3 Optrace](http://127.0.0.1:8000/?view=timeline&profile=profile-741f3763667870ae079fa571)

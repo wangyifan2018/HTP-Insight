@@ -20,12 +20,14 @@
 
 整条用户路径使用实测文件。Fixture 可通过导入界面显式登记，保留 Fixture 来源，未纳入上述设备结论。完整源码、报告与现有产物间的链接见 [Mac](../experiments/macos-mvp.md) 和 [Android](../experiments/android-tiny-htp-ab.md) 验收记录。
 
-## 本轮补齐与复验
+## 后续补齐与复验
 
 | 工作流 | 状态 | 证据 |
 | --- | --- | --- |
 | 五步首页、能力页与真实样例 | Verified | 浏览器引导从已测 CPU 实验进入时间线、热点与诊断。工作区也能打开已保存的 HTP 记录。 [`workflow.tsx`](../../web/src/workflow.tsx) |
-| 模型导入、ORT、比较 | Verified | 在隔离工作区经真实 UI 加载 ONNX、跑两次 ORT、比较同模型输出。 [浏览器验收](../experiments/mac_mvp_validation.md) |
-| Transformer 层与节点 | Partial | 新增层作用域分组，单测覆盖多层命名。浏览器用真实 Tiny、MobileNet 核对模块搜索、热点及双向跳转，其他多层模型命名仍需实测。 [`graph.py`](../../htp_insight/graph.py) |
+| 模型导入、ORT、比较 | Verified | 浏览器选择带嵌套权重文件的真实 ONNX 和 NPZ，隔离工作区跑两次 ORT 并保存命名 A/A。 [复审验收](product-gap-review.md) |
+| Transformer 层与节点 | Partial | 支持命名的层作用域，并识别未命名图中的直接 Attention/MLP 数据流。真实 Tiny、MobileNet、Qwen 图与热点已核对，其他导出结构仍需实测。 [`graph.py`](../../htp_insight/graph.py) |
 | 实验任务和性能聚合 | Verified | CPU 和 HTP 的计划、Markdown、JSON 和事件由 API、CLI 与 MCP 共用，并验证浏览器剪贴板。 [`experiment_plan.py`](../../htp_insight/experiment_plan.py) |
-| Claude Code 直接调用、Web 发起 HTP、Linux / SSH | Partial／Missing | 项目 MCP 客户端待用户批准。Web 支持 HTP 结果查看与导入，本地 ADB 采集已实测。专用 Linux 和 SSH 采集未实现。 [剩余要求](../roadmap.md) |
+| Web 发起 HTP 采集 | Verified | 页面上传 DLC、配对 ONNX、连接 SM6650 并生成真实 Basic Profile。CLI 完成四种模式。 [复审验收](product-gap-review.md) |
+| HTP 时间线 | Partial | 真实 Optrace 验证 HMX、HVX、硬件依赖及跨通道阻塞候选。真实 HLX 和跨核心行为等待对应 Trace。 [HTP 实测](../experiments/htp-parallelism.md) |
+| Claude Code 直接调用、Linux / SSH | Partial／Missing | 独立 MCP 客户端已验收，Claude Code 项目入口待批准。专用 Linux 和 SSH 采集仍缺授权环境。 [剩余要求](../roadmap.md) |

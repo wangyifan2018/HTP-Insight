@@ -39,7 +39,7 @@ runs/aimet-env/bin/python -m scripts.aimet_encodings
 
 ## 使用自己的模型
 
-把 `.onnx`、可选 AIMET `.encodings`、输入 `.npz` 或 Trace JSON 放到 `runs/inbox/`。NPZ 键必须与模型输入同名，数组需匹配导出的 Shape 和 DType。外置 ONNX Tensor 文件随模型一起放置。Web 的 **Manage evidence** 可导入模型和 Trace、运行基准和比较两个 Profile。
+Web 的 **Import** 和 **Manage evidence** 支持选择模型、外置张量、Encodings、输入和 Trace 文件。也可把文件放入 `runs/inbox/` 并填写相对路径。NPZ 键必须与模型输入同名，数组需匹配导出的 Shape 和 DType。DLC 或 Context 可与源 ONNX 配对，A/B 可填写实验名。
 
 ```bash
 .venv/bin/python -m htp_insight import_model '{"filename":"my-model.onnx","encodings":"my-model.encodings"}'
@@ -49,7 +49,7 @@ runs/aimet-env/bin/python -m scripts.aimet_encodings
 
 HTP Context Binary 可通过 `import_model` 登记，接受 `target_device` 和 `compatibility`。真机运行使用 QAIRT，专有日志通过同版本的官方 viewer 转换。
 
-Android 设备上的 Basic、Detailed、Linting 与 Optrace 采集可使用 [QAIRT Android 运行器](docs/android-runner.md)。
+在 **Profile Timeline → Run Android HTP** 可使用已配对产物和本地设备采集 Basic、Detailed、Linting 或 Optrace。Optrace 依赖与 Context 匹配的 schematic。 [Android 采集指南](docs/android-runner.md)
 
 测量 Qwen3-TTS 12Hz 0.6B Base 的 Code Predictor 可运行 `.venv/bin/python -m scripts.profile_qwen3_tts`。该脚本只下载组件图和权重，在 Mac 上执行固定单步 Decode、数值验证和 ORT Profiling。 [Code Predictor 实测](docs/experiments/qwen3-tts-code-predictor.md)
 

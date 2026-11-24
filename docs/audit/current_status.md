@@ -1,5 +1,7 @@
 # HTP Insight 工程审计
 
+本次更新的结论、修复与真实验收见 [规格复审与优化结果](product-gap-review.md)。以下为前一阶段的审计基线。
+
 2026-11-24 审计起点为 `d5c72a3`。逐项证据见[功能矩阵](feature_matrix.md)。基线执行 `make test` 通过 17 项，`make browser` 通过 11 项，覆盖真实 ORT、DLC framework mapping、QAIRT CSV、HTP Optrace、原始证据联动和历史 Android A/B。真机能力核对使用已保存的 SM6650 原始采集。同一仓库中 `tests/fixtures/` 仅用于解析回归。
 
 ## 已有可用闭环

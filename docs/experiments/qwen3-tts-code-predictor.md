@@ -25,3 +25,17 @@
 3. 将留出输入按 DLC 编码生成 native raw 文件后，在已连接的 SM6650 上调用 QNN HTP。设备在第一层的 `input_layernorm` RMSNorm 校验拒绝了 FP16，`QnnBackend_validateOpConfig` 返回 3110，采集停在 Graph Prepare。另用 `--target_soc_model SM6650` 时，本机转换器报告该型号不受支持。本轮无 Code Predictor 的 HTP 延迟与 Optrace 数据。[设备日志](../../runs/qwen3-tts-0.6b/static-decode-preflight/device-validator.log) · [SoC 转换预检](../../runs/qwen3-tts-0.6b/static-decode-preflight/sm6650-converter.log)
 
 SM6650 继续验收需要支持该设备的整型 lowering 或经数值验证的图分段，优先针对 RMSNorm 和其他会被转成 FP16 的算子。取得可运行分段后，分别核查 logits、KV Cache、Basic 延迟及每段 Optrace。保存这轮实验的主要产物，便于与后续候选核对来源和 I/O。
+
+## 第一层 MLP 分段复验
+
+`.venv/bin/python -m scripts.extract_qwen3_tts_mlp` 提取第一层 Gate、SiLU、Up 和 Down 投影，固定 `[1,1,1024]` 输入。源输入是全模型真实 Decode 执行到 `post_attention_layernorm` 的输出。提取后 ORT 输出与全模型中的对应中间张量一致，另外从八组独立 Decode 案例提取校准激活。分段 ORT 首次 p50/p95 为 0.850/1.106 ms，复测为 0.748/0.859 ms。 [首次 CPU 时间线](http://127.0.0.1:8000/?view=timeline&profile=profile-fa7709512b8a2dc6765a6ee3) · [分段 CPU 复测](../../runs/qwen3-tts-0.6b/layer0-mlp/cpu.json)
+
+SM6650 运行三种分段 DLC，均完成 110 次 Basic 执行，丢弃前 10 次。用留出激活对照全模型 FP32 中间输出，固定 `atol=0.03`、`rtol=0.03`。
+
+| 模式 | p50 | p95 | 最大绝对误差 | 留出输出 |
+| --- | ---: | ---: | ---: | --- |
+| W8A16 | 3.589 ms | 3.984 ms | 0.03724 | 未通过 |
+| W8A16 V73 per-channel 配置 | 3.370 ms | 3.929 ms | 0.03724 | 未通过 |
+| W16A16 | 5.125 ms | 5.574 ms | 0.04522 | 未通过 |
+
+W8A16 分段另有实测 Optrace，包含 **221 条操作、236 对有证据的依赖** 和三个能定位的资源通道。该 Profile 只覆盖 MLP 分段，整图仍在 FP16 RMSNorm 校验处阻塞。 [分段 Optrace](http://127.0.0.1:8000/?view=timeline&profile=profile-eaa95abfccd11cb900e5c330) · [设备数值和 Basic 记录](../../runs/qwen3-tts-0.6b/layer0-mlp/android-validation.json)
