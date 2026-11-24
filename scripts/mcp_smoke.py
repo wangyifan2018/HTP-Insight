@@ -33,10 +33,15 @@ async def connect(core, baseline, candidate):
             assert explanation == core.explain_hotspot(baseline, best)
             suggestions = await call(client, "suggest_experiments", {"profile_id": baseline})
             assert suggestions == core.suggest_experiments(baseline)
+            overview = await call(client, "analyze_model_performance", {"profile_id": baseline})
+            assert overview == core.analyze_model_performance(baseline)
+            plan = await call(client, "generate_experiment_plan", {"profile_id": baseline, "hotspot_id": best})
+            assert plan == core.generate_experiment_plan(baseline, best)
             return {
                 "protocol": init.protocolVersion, "server": init.serverInfo.name, "tools": listed,
                 "graph": {"id": graph["artifact"]["id"], "nodes": len(graph["nodes"]), "deep_link": graph["deep_link"]},
                 "hotspots": hotspots, "explanation": explanation, "suggestions": suggestions,
+                "overview": overview, "plan": plan,
                 "comparison": await call(client, "compare_experiments", candidate),
             }
 

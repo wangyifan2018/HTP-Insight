@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from htp_insight import web
 from scripts.mcp_smoke import connect
-from test_core import local
+from test_core import fixture_profile, local
 
 
 def test_shared_web_and_mcp(local, monkeypatch):
@@ -24,3 +24,14 @@ def test_shared_web_and_mcp(local, monkeypatch):
     assert client.post("/api/tools/run_ort_profile", json={"model_id": model_id, "inputs": "test.npz", "repeats": "five"}).status_code == 422
     assert client.get(f"/api/experiments/{mcp['comparison']['id']}?format=json").json() == mcp["comparison"]
     assert "Numerical validation" in client.get(f"/api/experiments/{mcp['comparison']['id']}?format=md").text
+    plan = mcp["plan"]
+    path = f"/api/profiles/{a['id']}/hotspots/{plan['hotspot']['id']}/plan"
+    assert client.get(path).json() == plan
+    assert client.get(path + "?format=json").json() == plan
+    assert client.get(path + "?format=md").text == plan["markdown"]
+    assert mcp["overview"]["next_experiment"] == plan
+    assert plan["evidence"][0]["event"]["id"] in plan["hotspot"]["evidence_ids"]
+    fixture = fixture_profile(core, model_id)
+    first = core.get_hotspots(fixture["id"])["hotspots"][0]["id"]
+    assert client.get(f"/api/profiles/{fixture['id']}/hotspots/{first}/plan").status_code == 422
+    assert core.analyze_model_performance(fixture["id"])["next_experiment"] is None

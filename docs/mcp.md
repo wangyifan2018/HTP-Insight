@@ -25,6 +25,8 @@
 | `get_hotspots` | `profile_id`、可选 `level` 和 `limit` | 排序、分母范围、证据 ID |
 | `explain_hotspot` | `profile_id`、`hotspot_id`、可选 `level` | Shape、DType、QDQ、可证伪假设、事件引用 |
 | `suggest_experiments` | `profile_id`、可选 `limit` | 优化假设和验证指标 |
+| `analyze_model_performance` | `profile_id`、可选 `limit` | 模型、来源、延迟、模块热点、证据缺口和下一项 Notebook 实验 |
+| `generate_experiment_plan` | `profile_id`、`hotspot_id`、可选 `level` | 结构、证据、修改假设、数值检查和 A/B 验收，返回 JSON 与 Markdown |
 | `compare_experiments` | `baseline`、`candidate`、可选 `hypothesis` | A/B、数值验证、Graph 差异和 Deep Link |
 
 导入参数以 `runs/inbox/` 为根路径。接受 JSON 中已定义的字段及有限次数的本地推理。Optrace 导入支持 `optrace-chrome-v1`，QAIRT 2.50 Linting 导入支持 `qnn-linting-chrome-v2.50`。Linting 热点返回 `total_cycles` 及 DSP cycles 单位。真机 `qnn-optrace-chrome-v2.50` 可带 `framework_csv` 导入，以 QAIRT 的 QNN 算子名连接 DLC 来源映射和 ONNX 节点。A/B 可传 `atol` 与 `rtol` 检查已保存输出。可选映射文件的结构示例如下。
@@ -43,3 +45,5 @@ QAIRT 2.50 的 `qnn-viewer-csv-v2.50` 接受 `qnn-profile-viewer` 输出的 Basi
 用 `import_evidence` 将真实 `qhas-v1.0` 或 `htp-graph-v1.0` JSON 附加到对应 Optrace Profile。随后 `profile_evidence` 可按 Profile ID 列出所有附件，或传入 HTP `operation_id` 定位拓扑和 QHAS 操作记录。`profile_event` 和 `explain_hotspot` 也返回能按 ID 关联的证据，含原文件的下载地址与 SHA-256。
 
 `compare_experiments` 在采集条件缺失或不一致时返回 `latency.comparison_issues`。每项包含条件 `field` 和问题 `problem`，相对延迟变化为 `null`。有实测分位数时仍返回各侧原值。
+
+首次分析可直接调用 `analyze_model_performance`。如需指定热点，先调用 `get_hotspots`，将其 `id` 和对应的 `level` 传给 `generate_experiment_plan`。任务引用真实记录，保留已导入数据的来源标签。Fixture 拒绝生成；Unknown 返回补齐归因的任务。结构修改和验收线均为待验证假设。将返回的 `markdown` 交给 Claude Code，根据 Notebook 上下文实施。

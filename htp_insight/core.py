@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 
 import numpy as np
 
-from . import analysis, graph, profiles, qnn, qnn_evidence
+from . import analysis, experiment_plan, graph, profiles, qnn, qnn_evidence
 from .qnn_csv import csv_rows
 from .schema import ExperimentResult, Graph, ModelArtifact, NodeMapping, ProfileSession
 
@@ -263,11 +263,13 @@ class Core:
                 suggestion.adaptation = "Run a matched HTP experiment and inspect the affected operation and graph execution."
         evidence_ids = set(hotspot.evidence_ids)
         operation_ids = {event.operation for event in session.events if event.id in evidence_ids}
-        mapping_proof = [mapping.model_dump() for mapping in session.mappings
-                         if mapping.evidence and operation_ids.intersection(mapping.operation_ids)]
+        mappings = [mapping for mapping in session.mappings if operation_ids.intersection(mapping.operation_ids)]
+        mapping_proof = [mapping.model_dump() for mapping in mappings if mapping.evidence]
         return {
             **hotspot.model_dump(), "mapping_proof": mapping_proof, "source": session.source, "backend": session.backend, "provenance": session.provenance,
-            "nodes": [{**node.model_dump(), "output_tensors": [model.tensors[t].model_dump() for t in node.outputs if t],
+            "mapping_methods": sorted({mapping.method for mapping in mappings}),
+            "nodes": [{**node.model_dump(), "input_tensors": [model.tensors[t].model_dump() for t in node.inputs if t],
+                       "output_tensors": [model.tensors[t].model_dump() for t in node.outputs if t],
                        "quantization_details": [model.quantization[i].model_dump() for i in node.quantization]} for node in nodes],
             "example_evidence": first_event.model_dump(),
             "related_evidence": self.profile_evidence(profile_id, first_event.operation)["artifacts"] if first_event.operation else [],
@@ -275,6 +277,77 @@ class Core:
             "hypothesis": suggestion.model_dump(),
             "deep_link": self.link("timeline", profile=profile_id, event=first_event.id),
         }
+
+    def generate_experiment_plan(self, profile_id: str, hotspot_id: str, level: str = "module") -> dict[str, Any]:
+        session = self.session(profile_id)
+        if session.provenance == "fixture":
+            raise ValueError("An experiment plan requires a real capture. Fixture timings are excluded.")
+        model = self.graph(session.model_id)
+        hotspot = self.explain_hotspot(profile_id, hotspot_id, level)
+        adaptation = experiment_plan.adaptation(model, hotspot, session)
+        target = adaptation.get("target_node")
+        target_operations = {operation for mapping in session.mappings if target in mapping.node_ids for operation in mapping.operation_ids}
+        evidence_ids = set(hotspot["evidence_ids"])
+        events = sorted((event for event in session.events if event.id in evidence_ids),
+                        key=lambda event: (event.operation not in target_operations, -(event.duration or 0)))
+        evidence = []
+        for event in events[:3]:
+            artifacts = self.profile_evidence(profile_id, event.operation)["artifacts"] if event.operation else []
+            evidence.append({
+                "event": event.model_dump(),
+                "deep_link": self.link("timeline", profile=profile_id, event=event.id),
+                "raw_url": f"{self.web_url}/api/profiles/{profile_id}/events/{event.id}",
+                "artifacts": [{**item, "link": self.web_url + item["raw"]} for item in artifacts],
+            })
+        if hotspot["mapping_proof"]:
+            mapping = "Source mapping is supported by the provided compiler records. Inspect the operation-to-node links and keep unmatched work Unknown."
+        elif hotspot["node_ids"]:
+            mapping = "The operation group has source-node links. Review their matching method before attributing individual event duration."
+        else:
+            mapping = "Source attribution is Unknown. Collect source mapping before editing the model."
+        response = {
+            "schema_version": 1, "id": "plan-" + digest(encode([1, profile_id, level, hotspot_id]))[:24],
+            "model": {**model.artifact.model_dump(), "architecture": model.architecture, "node_count": len(model.nodes),
+                      "initializer_elements": model.initializer_elements,
+                      "inputs": [model.tensors[name].model_dump() for name in model.inputs],
+                      "outputs": [model.tensors[name].model_dump() for name in model.outputs],
+                      "quantization_formats": sorted({item.format for item in model.quantization})},
+            "profile": {**self.profile_summary(session),
+                        "latency_us": {key: value for key, value in session.latency_us.items() if key != "samples"} if session.latency_us else None},
+            "hotspot": {key: value for key, value in hotspot.items()
+                        if key in {"id", "label", "module", "node_ids", "unit", "share", "scope", "calls", "total_us", "total_cycles", "evidence_ids"}},
+            "nodes": hotspot["nodes"], "evidence": evidence, "mapping": mapping,
+            "mapping_methods": hotspot["mapping_methods"], "mapping_proof": hotspot["mapping_proof"],
+            "adaptation": adaptation, "validation": experiment_plan.validation(session),
+            "deep_link": self.link("diagnosis", profile=profile_id, hotspot=hotspot_id, level=level),
+        }
+        return {**response, "markdown": experiment_plan.markdown(response)}
+
+    def analyze_model_performance(self, profile_id: str, limit: int = 5) -> dict[str, Any]:
+        if not 1 <= limit <= 20:
+            raise ValueError("Limit must be 1–20")
+        measured = self.get_hotspots(profile_id, limit=limit)
+        session = self.session(profile_id)
+        model = self.graph(session.model_id)
+        top = next((row for row in measured["hotspots"] if row["node_ids"] and row["module"] != "Shared"), None)
+        priority = top or (measured["hotspots"][0] if measured["hotspots"] else None)
+        pending = []
+        plan = None
+        if session.provenance == "fixture":
+            pending.append("Replace fixture data with a real capture before generating a Notebook task.")
+        elif priority:
+            plan = self.generate_experiment_plan(profile_id, priority["id"])
+        if not top:
+            pending.append("Collect mapped operation events before attributing costs to the source graph.")
+        if not session.latency_us:
+            pending.append("Collect matched graph execution samples to obtain p50 and p95.")
+        if any(row["module"] in {"Shared", "Unknown"} for row in measured["hotspots"]):
+            pending.append("Inspect shared or Unknown work using source mapping evidence.")
+        latency = {key: value for key, value in session.latency_us.items() if key != "samples"} if session.latency_us else None
+        return {**measured, "model": model.artifact.model_dump(), "profile": {
+            "id": profile_id, "device": session.device, "profiler_version": session.profiler_version,
+            "conditions": session.conditions, "latency_us": latency, "deep_link": self.link("timeline", profile=profile_id),
+        }, "investigate": pending, "next_experiment": plan}
 
     def suggest_experiments(self, profile_id: str, limit: int = 3) -> dict[str, Any]:
         summary = self.get_hotspots(profile_id, "module", limit)

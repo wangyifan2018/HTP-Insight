@@ -19,6 +19,8 @@ def build_server():
         "profile_event": "Read a normalized event and its original JSON or CSV record.",
         "suggest_experiments": "Suggest adaptations and verification metrics for the highest-duration modules.",
         "compare_experiments": "Compare two profile IDs and record graph, latency and numerical differences.",
+        "analyze_model_performance": "Read a profile's source model, observed graph latency, ranked hotspots, evidence gaps and the next Notebook experiment in one call.",
+        "generate_experiment_plan": "Create a Notebook adaptation task with observed evidence, shapes, mapping, a hypothesis, numerical checks and matched A/B criteria. Returns structured JSON and Markdown.",
     }
     for name, method in operations(Core()).items():
         server.add_tool(method, description=descriptions[name], structured_output=True)

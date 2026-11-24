@@ -1,4 +1,5 @@
 import inspect
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse, Response
@@ -6,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import TypeAdapter
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .core import ROOT, Core
+from .core import ROOT, Core, encode
 from .interfaces import operations
 
 core = Core()
@@ -46,6 +47,18 @@ def hotspots(profile_id: str, level: str = "module", limit: int = 10):
 @app.get("/api/profiles/{profile_id}/hotspots/{hotspot_id}")
 def explanation(profile_id: str, hotspot_id: str, level: str = "module"):
     return call(core.explain_hotspot, profile_id, hotspot_id, level)
+
+
+@app.get("/api/profiles/{profile_id}/hotspots/{hotspot_id}/plan")
+def experiment_plan(profile_id: str, hotspot_id: str, level: str = "module",
+                    format: Literal["md", "json"] | None = None):
+    plan = call(core.generate_experiment_plan, profile_id, hotspot_id, level)
+    if format is None:
+        return plan
+    headers = {"Content-Disposition": f"attachment; filename=\"{plan['id']}.{format}\""}
+    if format == "md":
+        return PlainTextResponse(plan["markdown"], media_type="text/markdown", headers=headers)
+    return Response(encode(plan), media_type="application/json", headers=headers)
 
 
 @app.get("/api/profiles/{profile_id}/raw")
