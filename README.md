@@ -51,6 +51,8 @@ HTP Context Binary 可通过 `import_model` 登记，接受 `target_device` 和 
 
 Android 设备上的 Basic、Detailed、Linting 与 Optrace 采集可使用 [QAIRT Android 运行器](docs/android-runner.md)。
 
+测量 Qwen3-TTS 12Hz 0.6B Base 的 Code Predictor 可运行 `.venv/bin/python -m scripts.profile_qwen3_tts`。该脚本只下载组件图和权重，在 Mac 上执行固定单步 Decode、数值验证和 ORT Profiling。 [Code Predictor 实测](docs/experiments/qwen3-tts-code-predictor.md)
+
 ## 数据与证据
 
 | 路径 | 内容 |
