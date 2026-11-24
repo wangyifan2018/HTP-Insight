@@ -4,7 +4,7 @@
 
 ## 本机运行
 
-需要 arm64 macOS 13+、Python 3.11、Node.js 22+、npm 和 Make。依赖已在 macOS 26.7.3 / Apple M2 验证。
+需要 arm64 macOS 13+、Python 3.11、Node.js 22+、npm 和 Make。依赖已在 macOS 26.7.3 / Apple M2 验证。工程结构、最短启动路径和验收命令见 [开发接手指南](AGENTS.md)。
 
 ```bash
 make doctor
