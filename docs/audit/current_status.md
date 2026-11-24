@@ -17,3 +17,9 @@
 ## 架构评估
 
 Core、版本化适配器与接口层的职责清晰。原始文件和稳定 ID 可在工作区重新加载，统一数据模型可表达不同时间单位、映射来源和 Unknown。保留现有 FastAPI、React 与 stdio MCP。产品层新增只读的证据聚合和导出，继续复用 Core 的映射与比较规则。设备调用留在现有本地 runner。
+
+## 本轮验收结果
+
+五步首页、系统能力、真实引导、热点证据与 Notebook 交接已贯通。按实测来源显示延迟与证据，并对基础计时文件、归因不足和缺少设备采集给出明确状态。规则假设及建议验收线仍需在新的 Notebook 实验中验证。[使用流程](../ux/user_journey.md)
+
+最终 18 项自动测试、13 项主工作区浏览器检查和隔离工作区的真实导入、ORT 采样与 A/A 检查均通过。Tiny Transformer 原 Notebook 的 Packed QKV 重新导出，FP32 输出一致。MCP SDK 复核本轮 Mac Profile 和已保存 Android HTP Profile 的计划与事件，Claude Code 项目入口仍待批准。[Mac 复验与证据](../experiments/mac_mvp_validation.md) · [剩余缺口](../roadmap.md)

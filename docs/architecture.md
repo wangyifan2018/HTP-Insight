@@ -12,6 +12,7 @@ flowchart LR
     Profile --> Optrace["Converted Optrace Chrome Trace"]
     Profile --> QNN["QAIRT 2.50 HTP linting and Optrace"]
     Core --> Store["Local artifact and evidence store"]
+    Core --> Plan["Source graph + capture → Notebook task"]
 ```
 
 ## 核心对象
@@ -57,3 +58,9 @@ ORT 基准比较要求相同输入摘要、设备、执行后端、版本和运�
 | HMX/HVX/DMA | Timeline 预留按资源名分组，资源标注交给经过验证的解析器 |
 
 Linux 接入沿用 `ProfileSession`、`ProfileEvent` 和归因对象。Web 和 MCP 只消费这些 Core 对象。当前工作台运行于 loopback，并假定 Inbox 中是用户信任的本地文件。
+
+## 产品工作流和 Notebook 交接
+
+首页按模型、采集与操作证据显示阶段可用性。能力接口查询本机 ORT CPU 提供者与已保存实测；引导实例必须来自两侧为实测、条件匹配且通过数值检查的实验。语义层按源 ONNX 已识别的层作用域归组，保留单层模型和一般 ONNX 视图。
+
+`generate_experiment_plan` 从指定 Profile 和热点解析输入输出 Shape、映射、代表事件及匹配附件，返回同一份结构化任务和 Markdown。Fixture 跳出真实任务生成；Unknown 引导收集归因。`analyze_model_performance` 聚合源模型、实测排名、证据缺口和对应的候选任务。Web、CLI 和 MCP 复用 Core，且导出只读。采集留在显式 ORT 或 Android runner 入口。

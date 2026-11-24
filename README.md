@@ -16,6 +16,8 @@ make web
 
 浏览器打开 [HTP Insight](http://127.0.0.1:8000)。`make demo` 生成 Tiny Transformer 的 Baseline、Packed QKV Candidate 和确定性输入，再下载并实际运行 Qualcomm MobileNet-v2 Float、W8A8、W8A16。公开模型包缓存在 `runs/downloads/`。下载使用 Qualcomm 公共 S3 地址，首次需要联网。只跑 Tiny Transformer 可运行 `.venv/bin/python -m examples.demo --tiny-only`。
 
+首页可从 **Import → Profile → Locate → Diagnose → Optimize** 开始，也可选已有的 **Guided analysis** 记录。诊断页面可基于当前热点生成 Claude Code Notebook 任务并复制或下载。**System Status** 显示本地运行能力和实测记录。 [使用指南](docs/ux/user_journey.md) · [工程审计](docs/audit/current_status.md)
+
 ```bash
 make notebook
 .venv/bin/python -m scripts.mcp_smoke
