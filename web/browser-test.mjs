@@ -230,14 +230,20 @@ try {
     await page.screenshot({path:resolve(screenshots,'tiny-htp-mapping.png'), fullPage:true});
     const htpTimeline = await (await page.request.get(base + '/api/profiles/' + tinyProfile + '/htp-timeline')).json();
     const topBlocker = htpTimeline.blockers[0];
-    for (const lane of htpTimeline.lanes) {
-      await page.locator('.hardware-tracks').getByText('Core ' + lane.core + ' · ' + lane.type + ' · TID ' + lane.tid, {exact:true}).waitFor();
+    for (const lane of htpTimeline.lanes.filter(row => row.event_count > 0)) {
+      await page.locator(`[data-lane="${lane.id}"]`).waitFor();
     }
+    const typeFilter = page.getByLabel('Filter timeline by resource type');
+    await typeFilter.selectOption('type:HMX');
+    const hmxLanes = htpTimeline.lanes.filter(lane => lane.type === 'HMX' && lane.event_count > 0);
+    assert.equal(await page.locator('.hardware-tracks [data-lane]').count(), hmxLanes.length);
+    await page.getByText(/The physical engine count is unavailable/).waitFor();
     await page.locator('.parallel-row').first().click();
     await page.locator('.track-bars button.possible-blocker').waitFor();
     assert.equal(await page.locator('.track-bars button.possible-blocker').getAttribute('data-event'), topBlocker.source);
     assert.equal(await page.locator('.track-bars button.active').getAttribute('data-event'), topBlocker.target);
     await page.locator('.hardware-arrows .blocker-arrow').waitFor({state:'attached'});
+    assert.equal(await typeFilter.inputValue(), '');
     await page.getByText('Operation dependencies', {exact:true}).waitFor();
     const arrows = page.getByLabel('Dependency arrows', {exact:true});
     await arrows.uncheck();
@@ -250,12 +256,35 @@ try {
     assert.equal(await page.locator('.event-list tbody tr').count(), 1);
     await eventSearch.clear();
     await page.screenshot({path:resolve(screenshots,'htp-parallelism.png'), fullPage:true});
-    checked.push({check:'HTP hardware lanes, dependencies and cross-lane blocker highlight', profile:tinyProfile, source:topBlocker.source, target:topBlocker.target});
+    checked.push({check:'QAIRT execution lane filtering, dependencies and cross-lane blocker highlight', profile:tinyProfile, source:topBlocker.source, target:topBlocker.target});
     await page.goto(base + '/?' + new URLSearchParams({view:'timeline',profile:tinyProfile,node,event:originalEvent}));
     await returnToGraph.waitFor();
     await returnToGraph.click();
     await page.locator(`.graph-node.selected[data-node="${node}"]`).waitFor();
     checked.push({check:'Tiny Transformer W8A16 HTP A/B and Attention mapping', profile:tinyProfile, experiment:comparison.id, node});
+  }
+  const resourceProfile = process.env.HTP_INSIGHT_BROWSER_RESOURCE_PROFILE;
+  if (resourceProfile) {
+    const capture = await (await page.request.get(base + '/api/profiles/' + resourceProfile)).json();
+    assert.equal(capture.device.soc, 'SM6650');
+    assert.equal(capture.provenance, 'measured');
+    const timeline = await (await page.request.get(base + '/api/profiles/' + resourceProfile + '/htp-timeline')).json();
+    const hmx = timeline.lanes.find(lane => lane.type === 'HMX' && lane.event_count > 0);
+    assert.ok(hmx?.qhas_ids.length && hmx?.trace_tracks.some(track => track.name === 'Type: HMX'));
+    const event = Object.values(timeline.events).find(row => row.lane_id === hmx.id && row.flags.includes('uses_hmx'));
+    assert.equal(event.assignment, 'trace_and_qhas');
+    await page.goto(base + '/?' + new URLSearchParams({view:'timeline',profile:resourceProfile,event:event.event_id}));
+    await page.getByText(/Capture device · .*SM6650.*Hexagon V73/).waitFor();
+    await page.getByText('Optrace and QHAS agree', {exact:true}).waitFor();
+    await page.getByText('Flagged resource use', {exact:true}).waitFor();
+    await page.getByText('uses_hmx', {exact:true}).waitFor();
+    const dma = Object.values(timeline.events).find(row => row.lane_id === hmx.id && row.flags.includes('dma_wait') && !row.flags.includes('uses_hmx'));
+    assert.ok(dma);
+    await page.goto(base + '/?' + new URLSearchParams({view:'timeline',profile:resourceProfile,event:dma.event_id}));
+    await page.locator('.mapping-fields dd').getByText('dma_wait', {exact:true}).last().waitFor();
+    await page.getByText('Optrace and QHAS agree', {exact:true}).waitFor();
+    await page.screenshot({path:resolve(screenshots,'sm6650-reported-hmx-lane.png'),fullPage:true});
+    checked.push({check:'Fresh SM6650 Optrace distinguishes HMX placement from DMA flags', profile:resourceProfile, hmx:event.event_id, dma:dma.event_id});
   }
   const codePredictor = catalog.models.find(model => model.name === 'Qwen3-TTS 12Hz 0.6B · Code Predictor');
   if (codePredictor) {

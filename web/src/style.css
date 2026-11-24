@@ -140,6 +140,9 @@ td button:hover { text-decoration: underline; }
 .profile-attachments .attached-evidence { display: flex; gap: 14px; flex-wrap: wrap; }
 
 .hardware-tracks { position: relative; margin-top: 6px; }
+.lane-scope { margin-bottom: 12px; }
+.lane-scope label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.lane-scope p { margin: 7px 0; }
 .hardware-tracks .track { height: 60px; margin: 0; padding-top: 6px; }
 .hardware-tracks .track-bars { margin-top: 5px; }
 .hardware-arrows { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 2; overflow: visible; }

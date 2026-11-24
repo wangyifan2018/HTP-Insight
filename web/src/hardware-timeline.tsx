@@ -2,8 +2,15 @@ import { ArrowRight, ArrowUpRight } from 'lucide-react';
 import type { Dependency, HardwareLane, HardwareTimeline, ParallelBlocker } from './types';
 
 export function laneName(lane: HardwareLane) {
-  return `Core ${lane.core} · ${lane.type} · TID ${lane.tid}`;
+  const scope = lane.core !== null ? `Core ${lane.core}` : `Trace PID ${lane.pid}`;
+  return `${lane.type ? lane.type + ' lane' : 'Unclassified track'} · ${scope} · TID ${lane.tid}`;
 }
+
+export const placementLabels: Record<string, string> = {
+  trace_and_qhas: 'Optrace and QHAS agree', trace: 'Optrace lane metadata', qhas: 'QHAS operation instance',
+  unclassified_track: 'Raw trace track with unknown resource type', conflicting: 'Sources report different lanes',
+  unavailable: 'Lane evidence unavailable',
+};
 
 const evidenceLabels: Record<string, string> = {
   trace_data: 'Recorded data flow', trace_sequencer: 'Recorded sequencer order',
@@ -78,7 +85,7 @@ export function Parallelism({timeline, selected, choose, select}: {
     return lane ? laneName(lane) : 'Instance unavailable';
   }
   return <div className="detail parallelism">
-    <p>Possible blockers have a recorded dependency and finish inside an observed gap on another lane. The overlap measures timing alignment. Scheduler readiness and causal stall duration remain unknown.</p>
+    <p>Possible blockers have a recorded dependency and finish inside an observed gap on another lane of the same identified core. Scheduler readiness and causal stall duration remain unknown.</p>
     <h3>Possible cross-lane blockers ({timeline.blockers.length})</h3>
     {timeline.blockers.length ? <div className="parallel-rows">{timeline.blockers.map(row => <button className="parallel-row" key={`${row.source}:${row.target}`}
       aria-pressed={selected?.source === row.source && selected.target === row.target} onClick={() => choose(row)}>

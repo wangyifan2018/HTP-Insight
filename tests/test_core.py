@@ -7,6 +7,7 @@ import pytest
 from onnx import TensorProto as T, helper as h
 
 from htp_insight.core import Core
+from htp_insight.htp_timeline import analyze as analyze_htp_timeline
 from htp_insight.profiles import output_error
 
 
@@ -112,6 +113,67 @@ def test_htp_timeline_requires_recorded_flow_for_possible_blocker(local):
     trace.write_text(json.dumps({"header": {"artifact_type": "OP_TRACE"}, "traceEvents": rows[:-4]}))
     profile = core.import_profile(model_id, trace.name, "qnn-optrace-chrome-v2.50", fixture=True)
     assert core.inspect_htp_timeline(profile["id"])["blockers"] == []
+
+
+def test_htp_resource_lanes_follow_capture_metadata(local):
+    core, model_id = local
+
+    def label(pid, tid, name):
+        return {"ph": "M", "name": "thread_name", "pid": pid, "tid": tid, "args": {"name": name}}
+
+    def timed(identifier, pid, tid, start, *flags):
+        return {"ph": "X", "pid": pid, "tid": tid, "name": identifier, "ts": start, "dur": 10,
+                "args": {"ID": identifier, "HTP Op Type": identifier, "Start Cycle": 1000 + start,
+                         "Duration (cycles)": 10, "Flags": list(flags)}}
+
+    rows = [
+        {"ph": "M", "pid": 70, "name": "process_name", "args": {"name": "Core 0 Overview"}},
+        label(70, 16, "Type: HMX"), label(70, 19, "Type: HMX Tid: 19"),
+        label(2, 16, "Core: 2 Type: HLX Tid: 16"), label(2, 27, "Core: 2 Type: HLX Tid: 27"),
+        label(99, 13, "Type: fabric-dma"), label(9, 77, "Type: HVX"),
+        label(71, 34, "Core:0 Type: DMA Tid: 34"), label(72, 34, "Core:0 Type: DMA Tid: 34"),
+        timed("0x1", 70, 16, 0, "dma"),
+        timed("0x2", 70, 19, 10, "uses_hmx"),
+        timed("0x3", 2, 16, 0, "uses_hlx"),
+        timed("0x4", 2, 27, 11, "uses_hlx"),
+        timed("0x5", 99, 13, 1, "dma_wait"),
+        timed("0x6", 101, 256, 0, "uses_hmx"),
+        timed("0x7", 71, 34, 20, "dma"),
+        timed("0x7", 72, 34, 20, "dma"),
+        timed("0x8", 9, 77, 30, "uses_hvx"),
+        timed("0x9", 70, 19, 22, "uses_hmx"),
+        {"ph": "s", "cat": "input_output", "pid": 2, "id": 5, "tid": 16, "ts": 10},
+        {"ph": "f", "cat": "input_output", "pid": 2, "id": 5, "tid": 27, "ts": 11},
+    ]
+    trace = core.inbox / "multi-lane-fixture.json"
+    trace.write_text(json.dumps({"header": {"artifact_type": "OP_TRACE"}, "traceEvents": rows}))
+    profile = core.import_profile(model_id, trace.name, "qnn-optrace-chrome-v2.50", fixture=True)
+    session = core.session(profile["id"])
+    # QHAS v1 rows can supply a missing core or preserve disagreement with Optrace.
+    qhas = {"htp_overall_summary": {"data": [{
+        "htp": 3, "htp_resources": {"data": [{"tid": 19, "type": "HMX"}, {"tid": 77, "type": "HVX"}]},
+    }]}, "htp_op_instances": {"data": [
+        {"htp": 3, "tid": 19, "start_cycle": 1010, "cycles": 10, "op_id": "0x2"},
+        {"htp": 3, "tid": 77, "start_cycle": 1030, "cycles": 10, "op_id": "0x8"},
+    ]}}
+    result = analyze_htp_timeline(session, rows, [], [("fixture-qhas", qhas)])
+    assert result["provenance"] == "fixture"
+    lanes = {lane["id"]: lane for lane in result["lanes"]}
+    events = {event["operation_id"]: event for event in result["events"].values()}
+    assert lanes["core-0-HMX-tid-16"]["event_count"] == 1 and events["0x1"]["flags"] == ["dma"]
+    assert events["0x2"]["assignment"] == "conflicting" and events["0x2"]["lane_id"] is None
+    assert events["0x2"]["candidate_lanes"] == ["core-0-HMX-tid-19", "core-3-HMX-tid-19"]
+    assert events["0x9"]["lane_id"] == "core-0-HMX-tid-19"
+    assert events["0x3"]["lane_id"] == "core-2-HLX-tid-16"
+    assert events["0x4"]["lane_id"] == "core-2-HLX-tid-27"
+    assert lanes["pid-99-FABRIC-DMA-tid-13"]["core"] is None
+    assert events["0x6"]["lane_id"] == "pid-101-untyped-tid-256"
+    assert events["0x6"]["assignment"] == "unclassified_track"
+    assert lanes["core-0-DMA-tid-34"]["event_count"] == 1
+    assert len(lanes["core-0-DMA-tid-34"]["trace_tracks"]) == 2
+    assert events["0x8"]["lane_id"] == "core-3-HVX-tid-77" and events["0x8"]["assignment"] == "trace_and_qhas"
+    edge, = result["dependencies"]
+    assert edge["source"] == events["0x3"]["event_id"] and edge["target"] == events["0x4"]["event_id"]
 
 
 @pytest.mark.parametrize("records", [

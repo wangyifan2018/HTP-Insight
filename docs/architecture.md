@@ -45,7 +45,7 @@ ORT 基准比较要求相同输入摘要、设备、执行后端、版本和运�
 
 `qnn-optrace-chrome-v2.50` 读取 QAIRT Optrace 的 DSP cycles。物理轨与 QNN 算子轨可能重复，按 HTP ID、起始周期与持续周期去重。利用 `QNN Op Name` 和 DLC framework trace CSV 的明确来源名称进行多对多映射。端到端 A/B 的 Basic Profile 延迟以单独的时间口径展示。见 [Tiny Transformer 真机 A/B](experiments/android-tiny-htp-ab.md)。
 
-`inspect_htp_timeline` 从原始 Optrace 和可用附件计算硬件实例、依赖和候选阻塞，沿用既有 Profile/Event ID。通道取自 Optrace 物理视图，可与 QHAS 按操作 ID、起始周期和时长核对。trace flow 的数据和 sequencer 顺序与编译张量依赖分别保留。只有精确匹配的跨通道 trace flow 才能从观测空档推断潜在阻塞。 [实测案例](experiments/htp-parallelism.md)
+`inspect_htp_timeline` 从 Optrace 和 QHAS 动态发现 QAIRT 执行通道，沿用现有 Profile/Event ID。通道由 Core、资源类型和 TID 区分，Core 缺失时保留原始 PID。操作实例按 ID、起始周期和时长核对，重复视图归并，冲突时保存候选而不指派通道。资源标志描述单个操作。通道数量描述当前采集，物理引擎数量需独立证据。数据流、sequencer 和编译张量依赖分别保留。候选阻塞要求同一已识别核心上的通道、精确匹配的 Trace flow 和可观察空档。 [实测案例](experiments/htp-parallelism.md)
 
 ## QAIRT 数据支持与扩展
 
@@ -57,7 +57,7 @@ ORT 基准比较要求相同输入摘要、设备、执行后端、版本和运�
 | 编译器辅助映射 | 当前接受本项目定义的 operation_ids / node_ids 多对多 JSON 边表 |
 | HTP Binary | 支持登记、Hash、设备与兼容性元数据 |
 | qnn-net-run、ADB、SSH | [本机 ADB 采集](android-runner.md) 已验证。专用 Linux 和 SSH Runner 可复用 Core 导入 |
-| HMX/HVX/DMA | Timeline 预留按资源名分组，资源标注交给经过验证的解析器 |
+| HMX、HVX、HLX 和其他资源 | Timeline 按捕获的资源类型与 Core 筛选；资源实例与 DMA、同步等操作标志分别展示 |
 
 Linux 接入沿用 `ProfileSession`、`ProfileEvent` 和归因对象。Web 和 MCP 只消费这些 Core 对象。当前工作台运行于 loopback，并假定 Inbox 中是用户信任的本地文件。
 

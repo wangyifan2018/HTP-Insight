@@ -179,14 +179,15 @@ class QnnOptraceAdapter:
             flags = args.get("Flags", [])
             if not isinstance(flags, list):
                 raise ValueError(f"Invalid QAIRT Optrace flags at trace index {index}")
-            resource = [label for label, keys in (
-                ("HMX", {"uses_hmx"}), ("HVX", {"uses_hvx"}), ("DMA", {"dma", "dma_set", "dma_wait"}),
-            ) if any(isinstance(flag, str) and flag in keys for flag in flags)]
+            resource = {flag[5:].upper() for flag in flags
+                        if isinstance(flag, str) and re.fullmatch(r"uses_[a-zA-Z0-9_]+", flag)}
+            if any(flag in ("dma", "dma_set", "dma_wait") for flag in flags):
+                resource.add("DMA")
             events.append(ProfileEvent(
                 id=f"{session.id}-e{index}", source=self.source, backend=session.backend,
                 profiler_version=session.profiler_version, device=session.device, kind="node", name=name,
                 start=start, duration=duration, unit="cycles", track=track_labels.get((pid, tid), f"HTP track {tid}"),
-                operation=operation, resource=", ".join(resource) if resource else None, raw_index=index,
+                operation=operation, resource=", ".join(sorted(resource)) if resource else None, raw_index=index,
             ))
         if not events:
             raise ValueError("No measured HTP operations with cycle durations")

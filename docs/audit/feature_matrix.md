@@ -29,5 +29,5 @@
 | Transformer 层与节点 | Partial | 支持命名的层作用域，并识别未命名图中的直接 Attention/MLP 数据流。真实 Tiny、MobileNet、Qwen 图与热点已核对，其他导出结构仍需实测。 [`graph.py`](../../htp_insight/graph.py) |
 | 实验任务和性能聚合 | Verified | CPU 和 HTP 的计划、Markdown、JSON 和事件由 API、CLI 与 MCP 共用，并验证浏览器剪贴板。 [`experiment_plan.py`](../../htp_insight/experiment_plan.py) |
 | Web 发起 HTP 采集 | Verified | 页面上传 DLC、配对 ONNX、连接 SM6650 并生成真实 Basic Profile。CLI 完成四种模式。 [复审验收](product-gap-review.md) |
-| HTP 时间线 | Partial | 真实 Optrace 验证 HMX、HVX、硬件依赖及跨通道阻塞候选。真实 HLX 和跨核心行为等待对应 Trace。 [HTP 实测](../experiments/htp-parallelism.md) |
+| HTP 时间线 | Partial | SM6650 复采验证 HMX、HVX、按实例筛选及依赖证据。多个 HMX/HLX、未知类型和不同 Core 已覆盖 Fixture。真机 HLX 和跨核心时钟仍需测量。 [HTP 实测](../experiments/htp-parallelism.md) |
 | Claude Code 直接调用、Linux / SSH | Partial／Missing | 独立 MCP 客户端已验收，Claude Code 项目入口待批准。专用 Linux 和 SSH 采集仍缺授权环境。 [剩余要求](../roadmap.md) |

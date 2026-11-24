@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { Activity, ArrowDownToLine, ArrowRight, Box, ChevronDown, CircuitBoard, ClipboardList, Clock3, Cpu, FileJson, GitFork, House, Layers3, ScanLine, Search, Workflow } from 'lucide-react';
 import type { AndroidStatus, Artifact, Catalog, Evidence, EvidenceArtifact, Experiment, ExperimentPlan, Explanation, Graph, GuidedExample, HardwareTimeline, Hotspot, Node, Profile, ProfileInfo, Tensor, TimeUnit, WorkspaceStatus } from './types';
 import { Capabilities, WorkspaceHome, deviceName } from './workflow';
-import { DependencyArrows, OperationDependencies, Parallelism, laneName } from './hardware-timeline';
+import { DependencyArrows, OperationDependencies, Parallelism, laneName, placementLabels } from './hardware-timeline';
 import type { Step } from './workflow';
 import './style.css';
 
@@ -223,9 +223,12 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
   const [showArrows, setShowArrows] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [eventTerm, setEventTerm] = useState('');
+  const [coreFilter, setCoreFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
   const [page, setPage] = useState<{event?: string; index: number}>();
   const lanePlot = useRef<HTMLDivElement>(null);
-  const request = useData<HardwareTimeline>(profile.conditions.adapter === 'qnn-optrace-chrome-v2.50' ? '/profiles/' + profile.id + '/htp-timeline' : undefined);
+  const deviceOptrace = profile.conditions.adapter === 'qnn-optrace-chrome-v2.50';
+  const request = useData<HardwareTimeline>(deviceOptrace ? '/profiles/' + profile.id + '/htp-timeline' : undefined);
   const hardware = request?.value;
   const timed = profile.events.filter((event): event is Evidence & {start:number; duration:number} =>
     event.start !== null && event.duration !== null);
@@ -251,8 +254,18 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
   const first = run?.start ?? shown[0]?.start ?? 0;
   const last = run ? Math.max(first + 1, run.start + run.duration) : shown.reduce((latest, row) => Math.max(latest, row.start + row.duration), first + 1);
   const raw = useData<{raw: unknown; related_evidence: EvidenceArtifact[]}>(reference ? '/profiles/' + profile.id + '/events/' + reference.id : undefined);
-  const tracks = new Map<string, typeof timed>(hardware?.lanes.map(lane => [lane.id, []]));
+  const activeLanes = hardware?.lanes.filter(lane => lane.event_count > 0) ?? [];
+  const resourceTypes = [...new Set(activeLanes.flatMap(lane => lane.type === null ? [] : [lane.type]))].sort();
+  const knownCores = [...new Set(activeLanes.flatMap(lane => lane.core === null ? [] : [lane.core]))];
+  const hasUnassigned = hardware && activeLanes.reduce((count, lane) => count + lane.event_count, 0) < Object.keys(hardware.events).length;
+  const hasUnknownCore = hasUnassigned || activeLanes.some(lane => lane.core === null);
+  const hasUnknownType = hasUnassigned || activeLanes.some(lane => lane.type === null);
+  const visibleLanes = activeLanes.filter(lane =>
+    (!coreFilter || (lane.core === null ? 'unknown' : String(lane.core)) === coreFilter) &&
+    (!typeFilter || (lane.type === null ? 'unknown' : `type:${lane.type}`) === typeFilter));
+  const tracks = new Map<string, typeof timed>(visibleLanes.map(lane => [lane.id, []]));
   const laneById = new Map(hardware?.lanes.map(lane => [lane.id, lane]));
+  const showUnassigned = (!coreFilter || coreFilter === 'unknown') && (!typeFilter || typeFilter === 'unknown');
   const blocker = hardware?.blockers.find(row => row.source === query.blocker && row.target === reference?.id);
   const hardwareEvent = reference ? hardware?.events[reference.id] : undefined;
   const hardwareLane = laneById.get(hardwareEvent?.lane_id ?? '');
@@ -264,17 +277,26 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
   const min = Math.max(first, Math.min(last - range, midpoint - range / 2));
   const max = min + range;
   const normalizedTerm = eventTerm.trim().toLowerCase();
-  const found = normalizedTerm ? shown.filter(row => `${row.name} ${row.operation ?? ''} ${row.id}`.toLowerCase().includes(normalizedTerm)) : shown;
+  function visibleInLane(id: string) {
+    const track = hardware?.events[id]?.lane_id;
+    return !hardware || (track ? tracks.has(track) : showUnassigned);
+  }
+  const found = shown.filter(row => visibleInLane(row.id)
+    && (!normalizedTerm || `${row.name} ${row.operation ?? ''} ${row.id}`.toLowerCase().includes(normalizedTerm)));
   const currentPage = Math.max(0, Math.floor(found.findIndex(row => row.id === reference?.id) / 80));
   const pageIndex = Math.min(Math.max(0, Math.ceil(found.length / 80) - 1), page?.event === reference?.id ? page?.index ?? 0 : currentPage);
   for (const row of shown) {
-    if (row.start > max || row.start + row.duration < min) continue;
+    if (row.start > max || row.start + row.duration < min || !visibleInLane(row.id)) continue;
     const track = hardware ? hardware.events[row.id]?.lane_id ?? 'unassigned' : row.track || row.resource || 'Unspecified';
     const eventsOnTrack = tracks.get(track) ?? [];
     eventsOnTrack.push(row);
     tracks.set(track, eventsOnTrack);
   }
   function selectEvent(id: string, source?: string) {
+    if (!visibleInLane(id) || (source && !visibleInLane(source))) {
+      setCoreFilter('');
+      setTypeFilter('');
+    }
     const peer = shown.find(row => row.id === id);
     go({event:id, node:[...(mappings.get(peer?.operation ?? '') ?? [])][0], blocker:source});
   }
@@ -284,8 +306,10 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
         <Stat title={profile.source === 'Optrace' ? 'HTP operations' : 'Foreground operations'}
           value={shown.filter(row => row.kind === 'node').length}
           note={profile.source === 'Optrace' ? 'Unique measured events' : 'Viewer-averaged linting'}/>
-        <Stat title={hardware ? 'Recorded hardware lanes' : 'Reported resources'} value={hardware ? hardware.lanes.length :
-          [...new Set(shown.flatMap(row => row.resource?.split(', ') ?? []))].join(' · ') || 'Unavailable'}/>
+        <Stat title={deviceOptrace ? 'QAIRT execution lanes' : 'Reported resources'} value={deviceOptrace ?
+          hardware ? activeLanes.filter(lane => lane.type !== null).length : '—' :
+          [...new Set(shown.flatMap(row => row.resource?.split(', ') ?? []))].join(' · ') || 'Unavailable'}
+          note={hardware ? 'Typed lanes with events in this capture' : undefined}/>
       </> : <>
         <Stat title="Latency p50" value={us(profile.latency_us?.p50)} note="Uninstrumented"/>
         <Stat title="Latency p95" value={us(profile.latency_us?.p95)} note="Uninstrumented"/>
@@ -304,11 +328,36 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
         </select>}<a className="action" href={profile.raw_trace}><ArrowDownToLine size={14}/> Raw trace</a></div>}>
         <div className="timeline-body">
           {request?.error && <p className="error" role="alert">{request.error}</p>}
+          {deviceOptrace && !request && <p className="quiet" role="status">Loading QAIRT lane evidence…</p>}
+          {hardware && <div className="lane-scope">
+            <p className="quiet">Capture device · {deviceName(profile.device)}{profile.device.hexagon && ` · Hexagon ${profile.device.hexagon}`}</p>
+            <div className="inline">
+              <label>Core <select aria-label="Filter timeline by core" value={coreFilter} onChange={e => {setCoreFilter(e.target.value); setPage(undefined);}}>
+                <option value="">All cores</option>
+                {knownCores.map(core => <option key={core} value={core}>Core {core}</option>)}
+                {hasUnknownCore && <option value="unknown">Core unavailable</option>}
+              </select></label>
+              <label>Resource type <select aria-label="Filter timeline by resource type" value={typeFilter} onChange={e => {setTypeFilter(e.target.value); setPage(undefined);}}>
+                <option value="">All types</option>
+                {resourceTypes.map(type => <option key={type} value={`type:${type}`}>{type}</option>)}
+                {hasUnknownType && <option value="unknown">Unclassified</option>}
+              </select></label>
+            </div>
+            <p className="quiet">QAIRT reports execution lanes for this capture. The physical engine count is unavailable.
+              {resourceTypes.includes('HMX') && ' HMX labels a matrix-acceleration lane that can also carry DMA and synchronization events.'}</p>
+            <details><summary>Reported lane metadata ({hardware.lanes.length})</summary>
+              <ul className="dependency-list">{hardware.lanes.map(lane => <li key={lane.id}>
+                <b>{laneName(lane)}</b><small>{lane.event_count ? `${lane.event_count} assigned events` : 'No assigned events'} · {
+                  lane.trace_tracks.length ? 'Optrace metadata' : lane.qhas_ids.length ? 'QHAS metadata' : 'Raw event track'
+                }{lane.trace_tracks.length > 0 && lane.qhas_ids.length > 0 ? ' and QHAS' : ''}</small>
+              </li>)}</ul>
+            </details>
+          </div>}
           {blocker && <p className="blocker-focus"><b>Possible blocker</b> · {hardware?.events[blocker.source].name} → {hardwareEvent?.name} · {measure(blocker.overlap_cycles, 'cycles')} overlap</p>}
           <div className="axis">{[0,.25,.5,.75,1].map(n => <span key={n}>{measure(min - first + n * range, profile.unit)}</span>)}</div>
           <div ref={lanePlot} className={hardware ? 'hardware-tracks' : undefined}>
-          {[...tracks.entries()].map(([track, rows]) => <div className="track" key={track}>
-            <div>{profile.source === 'ORT' ? 'CPU · ' : ''}{hardware ? laneById.has(track) ? laneName(laneById.get(track)!) : 'Instance unavailable' : track}</div>
+          {[...tracks.entries()].map(([track, rows]) => <div className="track" key={track} data-lane={track}>
+            <div>{profile.source === 'ORT' ? 'CPU · ' : ''}{hardware ? laneById.has(track) ? laneName(laneById.get(track)!) : 'Lane unassigned' : track}</div>
             <div className="track-bars">{rows.map(row => <button key={row.id} aria-label={row.name} data-event={row.id} title={row.name + ' · ' + measure(row.duration, row.unit)}
               className={[row.id === reference?.id ? 'active' : '', row.id === blocker?.source ? 'possible-blocker' : '', hardware?.events[row.id]?.wait_kind ? 'recorded-wait' : ''].join(' ')}
               style={{left: Math.max(0, (row.start-min)/range*100) + '%', width: (Math.min(max,row.start+row.duration)-Math.max(min,row.start))/range*100 + '%'}}
@@ -318,6 +367,7 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
           </div>)}
           {hardware && showArrows && <DependencyArrows timeline={hardware} selected={reference?.id} blocker={blocker} tracks={[...tracks.keys()]} min={min} range={range}/>}
           </div>
+          {hardware && tracks.size === 0 && <p className="quiet">No execution lanes match the selected filters.</p>}
           {hardware && <p className="quiet timeline-legend"><span>Solid: data dependency</span><span>Dashed: sequencer order</span><span>Striped: recorded wait</span><span>Outlined: selected possible blocker</span></p>}
           <div className="timeline-tools inline"><input aria-label="Find timeline operation" placeholder="Find an operation or ID" value={eventTerm}
             onChange={e => {setEventTerm(e.target.value); setPage(undefined);}}/>
@@ -335,10 +385,14 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
       <Panel title="Event inspector" icon={<Clock3 size={15}/>}>
         {reference && <div className="detail"><p className="tag">{profile.source} · {profile.provenance}</p>
           <h2>{short(reference.name).replace(/_kernel_time$/, '')}</h2>
-          <dl><dt>Duration</dt><dd>{measure(reference.duration, reference.unit)}</dd>{reference.resource && <><dt>Resources</dt><dd>{reference.resource}</dd></>}<dt>Raw index</dt><dd>{reference.raw_index}</dd><dt>Mapped nodes</dt><dd>{ids.join(', ') || 'Unknown'}</dd></dl>
+          <dl><dt>Duration</dt><dd>{measure(reference.duration, reference.unit)}</dd>{reference.resource && <><dt>{deviceOptrace ? 'Flagged resource use' : 'Resources'}</dt><dd>{reference.resource}</dd></>}<dt>Raw index</dt><dd>{reference.raw_index}</dd><dt>Mapped nodes</dt><dd>{ids.join(', ') || 'Unknown'}</dd></dl>
           {hardwareEvent && <dl className="mapping-fields">
-            <dt>Hardware lane</dt><dd>{hardwareLane ? laneName(hardwareLane) : 'Instance unavailable'}</dd>
-            <dt>Placement evidence</dt><dd>{hardwareEvent.assignment.replaceAll('_', ' ')}</dd>
+            <dt>QAIRT execution lane</dt><dd>{hardwareLane ? laneName(hardwareLane) : 'Lane unassigned'}</dd>
+            <dt>Placement evidence</dt><dd>{placementLabels[hardwareEvent.assignment] ?? hardwareEvent.assignment}</dd>
+            {hardwareLane && hardwareLane.trace_tracks.length > 0 && <><dt>Raw lane labels</dt><dd className="break">
+              {[...new Set(hardwareLane.trace_tracks.map(track => track.name))].join(' · ')}</dd></>}
+            {hardwareEvent.assignment === 'conflicting' && <><dt>Candidate lanes</dt><dd className="break">
+              {hardwareEvent.candidate_lanes.map(lane => laneById.has(lane) ? laneName(laneById.get(lane)!) : lane).join(' / ')}</dd></>}
             <dt>HTP operation ID</dt><dd className="break">{hardwareEvent.operation_id}</dd>
             <dt>HTP flags</dt><dd>{hardwareEvent.flags.join(', ') || 'None reported'}</dd>
             <dt>Recorded wait</dt><dd>{hardwareEvent.wait_kind?.replaceAll('_', ' ') ?? 'None reported'}</dd>
