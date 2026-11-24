@@ -82,6 +82,11 @@ def raw_event(profile_id: str, event_id: str):
     return call(core.profile_event, profile_id, event_id)
 
 
+@app.get("/api/profiles/{profile_id}/htp-timeline")
+def htp_timeline(profile_id: str):
+    return call(core.inspect_htp_timeline, profile_id)
+
+
 @app.get("/api/profiles/{profile_id}/evidence")
 def profile_evidence(profile_id: str, operation_id: str | None = None):
     return call(core.profile_evidence, profile_id, operation_id)

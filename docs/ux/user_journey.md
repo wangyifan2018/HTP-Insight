@@ -14,4 +14,6 @@
 
 实验的时间口径随来源显示。ORT 独立采无插桩延迟和操作 Trace。Android Basic 图执行以微秒显示，Optrace 和 Linting 使用 DSP cycles，重叠操作计入对应的 Trace 周期和。对映射不足的热点，Notebook 任务会先要求补齐编译证据。[架构说明](../architecture.md)
 
+在 QAIRT Optrace 的 **Operation Timeline** 选中操作，可查看 Core、资源类型和 TID、张量或 sequencer 依赖。在 **Parallelism analysis** 选择候选阻塞，会高亮跨通道操作与空档。以 trace 标记的等待持续时间和推断的重叠时长各自解释结果。[真机案例](../experiments/htp-parallelism.md)
+
 Claude Code 可用 `analyze_model_performance` 一次读取模型、分位数、模块热点、证据缺口和下一项建议，再按选定热点调用 `generate_experiment_plan`。[MCP 操作参数](../mcp.md)

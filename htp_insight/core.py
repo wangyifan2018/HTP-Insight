@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 
 import numpy as np
 
-from . import analysis, experiment_plan, graph, profiles, qnn, qnn_evidence
+from . import analysis, experiment_plan, graph, htp_timeline, profiles, qnn, qnn_evidence
 from .qnn_csv import csv_rows
 from .schema import ExperimentResult, Graph, ModelArtifact, NodeMapping, ProfileSession
 
@@ -230,6 +230,26 @@ class Core:
             rows = document["traceEvents"] if isinstance(document, dict) else document
         return {"event": event.model_dump(), "raw": rows[event.raw_index],
                 "related_evidence": self.profile_evidence(profile_id, event.operation)["artifacts"] if event.operation else []}
+
+    def inspect_htp_timeline(self, profile_id: str) -> dict[str, Any]:
+        session = self.session(profile_id)
+        if session.conditions.get("adapter") != "qnn-optrace-chrome-v2.50":
+            raise ValueError("Hardware instance and dependency analysis requires a QAIRT device Optrace")
+        graphs, qhas = [], []
+        for index in sorted(self.item(profile_id, "evidence").glob("evidence-*/index.json")):
+            metadata = json.loads(index.read_bytes())
+            if metadata["provenance"] not in {"imported", "measured"}:
+                continue
+            if metadata["format"] == "htp-graph-v1.0":
+                graphs.append((metadata["id"], json.loads((index.parent / "operations.json").read_bytes())))
+            elif metadata["format"] == "qhas-v1.0":
+                qhas.append((metadata["id"], json.loads((index.parent / "raw.json").read_bytes())["data"]))
+        rows = self.read(profile_id, "trace.json")["traceEvents"]
+        result = htp_timeline.analyze(session, rows, graphs, qhas)
+        for blocker in result["blockers"]:
+            blocker["deep_link"] = self.link("timeline", profile=profile_id, event=blocker["target"], blocker=blocker["source"])
+        return {**result, "deep_link": self.link("timeline", profile=profile_id),
+                "raw_trace": f"/api/profiles/{profile_id}/raw"}
 
     def get_hotspots(self, profile_id: str, level: str = "module", limit: int = 10) -> dict[str, Any]:
         if not 1 <= limit <= 10000:

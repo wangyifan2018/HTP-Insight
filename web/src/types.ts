@@ -33,3 +33,9 @@ export interface Experiment {
 export interface Catalog { models: Artifact[]; profiles: ProfileInfo[]; experiments: Experiment[] }
 export interface GuidedExample { model: string; model_id: string; profile_id: string; experiment_id: string; backend: string; device: ProfileInfo['device']; latency: Experiment['latency'] }
 export interface WorkspaceStatus { ort_cpu_available: boolean; measured_captures: {id: string; backend: string; adapter: string | null; source: string}[]; examples: GuidedExample[] }
+
+export interface HardwareLane { id: string; core: number; type: string; tid: number }
+export interface HardwareEvent { event_id: string; operation_id: string; name: string; lane_id: string | null; assignment: string; flags: string[]; start: number; end: number; wait_kind: string | null; dominant_path_cycles: number | null; qhas_ids: string[] }
+export interface Dependency { source: string; target: string; evidence: {kind: string; tensor?: string; flow_id?: number | string; artifact_id?: string; raw_indices?: number[]}[] }
+export interface ParallelBlocker { source: string; target: string; overlap_cycles: number; idle_from: number; idle_to: number; producer_end: number; after_producer_cycles: number; status: 'possible'; deep_link: string }
+export interface HardwareTimeline { lanes: HardwareLane[]; events: Record<string, HardwareEvent>; dependencies: Dependency[]; waits: {event: string; kind: string; cycles: number}[]; blockers: ParallelBlocker[]; unresolved_flow_count: number }

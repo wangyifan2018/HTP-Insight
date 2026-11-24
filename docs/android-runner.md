@@ -16,7 +16,7 @@
 | `basic` | 官方 CSV 与 NetRun 单图执行样本 |
 | `detailed` | 官方 CSV、图执行样本及 HTP 单算子 cycles |
 | `linting` | Foreground、Background、Wait 和硬件资源标签 |
-| `optrace` | HTP 操作时间线、QHAS 和 HTP Graph，可提供编译映射 |
+| `optrace` | HTP 操作时间线、硬件 TID、数据流与 sequencer 箭头、QHAS 和 HTP Graph，可提供编译映射 |
 
 Optrace 需要传入 `--model model.bin --schematic model_schematic.bin`。使用 `--trace-dlc model.dlc --framework-csv framework.csv` 时，Core 会从编译器提供的显式名称关联 ONNX 节点。输入 shim、编译与校准由模型工程准备。
 

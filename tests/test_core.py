@@ -58,6 +58,48 @@ def test_scoped_transformer_modules(local):
     ]
 
 
+def test_htp_timeline_requires_recorded_flow_for_possible_blocker(local):
+    core, model_id = local
+
+    def timed(identifier, tid, start, duration, flags, **args):
+        return {"ph": "X", "pid": 0, "tid": tid, "name": identifier, "ts": start, "dur": duration,
+                "args": {"ID": identifier, "HTP Op Type": identifier, "Start Cycle": 1000 + start,
+                         "Duration (cycles)": duration, "Flags": flags, **args}}
+
+    def flow(phase, identifier, tid, time):
+        return {"ph": phase, "cat": "sequencer", "pid": 0, "id": identifier, "tid": tid, "ts": time}
+
+    rows = [
+        {"ph": "M", "pid": 0, "name": "process_name", "args": {"name": "Core 0 Overview"}},
+        {"ph": "M", "pid": 0, "tid": 256, "name": "thread_name", "args": {"name": "Type: HMX"}},
+        {"ph": "M", "pid": 0, "tid": 513, "name": "thread_name", "args": {"name": "Type: HLX"}},
+        timed("0x1", 256, 0, 30, ["uses_hmx"]),
+        timed("0x2", 513, 20, 80, ["uses_hlx"]),
+        timed("0x3", 256, 104, 26, ["uses_hmx"], **{"Inputs Ops": ["0x0002"]}),
+        timed("0x4", 256, 130, 10, ["dma_wait"]),
+        flow("s", 1, 513, 100), flow("f", 1, 256, 104),
+        flow("s", 2, 513, 99), flow("f", 2, 256, 104),
+    ]
+    trace = core.inbox / "lanes.json"
+    trace.write_text(json.dumps({"header": {"artifact_type": "OP_TRACE"}, "traceEvents": rows}))
+    profile = core.import_profile(model_id, trace.name, "qnn-optrace-chrome-v2.50", fixture=True)
+    result = core.inspect_htp_timeline(profile["id"])
+    assert result["provenance"] == "fixture"
+    assert [(lane["type"], lane["tid"]) for lane in result["lanes"]] == [("HMX", 256), ("HLX", 513)]
+    assert result["unresolved_flow_count"] == 1
+    assert len(result["dependencies"]) == 1
+    assert {row["kind"] for row in result["dependencies"][0]["evidence"]} == {"trace_sequencer", "trace_input"}
+    assert len(result["waits"]) == len(result["blockers"]) == 1
+    assert result["waits"][0]["cycles"] == 10
+    blocker, = result["blockers"]
+    assert result["events"][blocker["source"]]["operation_id"] == "0x2"
+    assert blocker["overlap_cycles"] == 70 and blocker["after_producer_cycles"] == 4
+
+    trace.write_text(json.dumps({"header": {"artifact_type": "OP_TRACE"}, "traceEvents": rows[:-4]}))
+    profile = core.import_profile(model_id, trace.name, "qnn-optrace-chrome-v2.50", fixture=True)
+    assert core.inspect_htp_timeline(profile["id"])["blockers"] == []
+
+
 @pytest.mark.parametrize("records", [
     {"x": [{"bitwidth": 8, "dtype": "int", "scale": .25}]},
     [{"name": "x", "bw": 8, "dtype": "INT", "scale": [.25]}],

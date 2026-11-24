@@ -45,6 +45,8 @@ ORT 基准比较要求相同输入摘要、设备、执行后端、版本和运�
 
 `qnn-optrace-chrome-v2.50` 读取 QAIRT Optrace 的 DSP cycles。物理轨与 QNN 算子轨可能重复，按 HTP ID、起始周期与持续周期去重。利用 `QNN Op Name` 和 DLC framework trace CSV 的明确来源名称进行多对多映射。端到端 A/B 的 Basic Profile 延迟以单独的时间口径展示。见 [Tiny Transformer 真机 A/B](experiments/android-tiny-htp-ab.md)。
 
+`inspect_htp_timeline` 从原始 Optrace 和可用附件计算硬件实例、依赖和候选阻塞，沿用既有 Profile/Event ID。通道取自 Optrace 物理视图，可与 QHAS 按操作 ID、起始周期和时长核对。trace flow 的数据和 sequencer 顺序与编译张量依赖分别保留。只有精确匹配的跨通道 trace flow 才能从观测空档推断潜在阻塞。 [实测案例](experiments/htp-parallelism.md)
+
 ## QAIRT 数据支持与扩展
 
 | 输入或执行 | 接入边界 |

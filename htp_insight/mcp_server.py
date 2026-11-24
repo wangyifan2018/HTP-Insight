@@ -21,6 +21,7 @@ def build_server():
         "compare_experiments": "Compare two profile IDs and record graph, latency and numerical differences.",
         "analyze_model_performance": "Read a profile's source model, observed graph latency, ranked hotspots, evidence gaps and the next Notebook experiment in one call.",
         "generate_experiment_plan": "Create a Notebook adaptation task with observed evidence, shapes, mapping, a hypothesis, numerical checks and matched A/B criteria. Returns structured JSON and Markdown.",
+        "inspect_htp_timeline": "Inspect QAIRT device Optrace hardware lanes, explicit dependency evidence, recorded wait spans and possible cross-lane blockers.",
     }
     for name, method in operations(Core()).items():
         server.add_tool(method, description=descriptions[name], structured_output=True)

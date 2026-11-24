@@ -153,7 +153,10 @@ class AndroidRunner:
             push(args.schematic, "schematic.bin")
             if args.trace_dlc:
                 push(args.trace_dlc, "traceback.dlc")
-            atomic_write(work / "features.json", encode({"features": {"htp_json": True, "traceback": True, "qhas_json": True}}))
+            atomic_write(work / "features.json", encode({"features": {
+                "htp_json": True, "traceback": True, "qhas_json": True,
+                "enable_input_output_flow_events": True, "enable_sequencer_flow_events": True,
+            }}))
             push(work / "features.json", "features.json")
             profile_args = ["--profiling_level", "detailed", "--profiling_option", "optrace"]
             reader = ["--reader", "./libQnnHtpOptraceProfilingReader.so", "--schematic", "./schematic.bin",

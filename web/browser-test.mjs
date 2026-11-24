@@ -226,10 +226,41 @@ try {
     }
     const returnToGraph = page.getByRole('button', {name:/Locate n[0-9]+ in graph/}).first();
     const node = (await returnToGraph.textContent()).match(/Locate (n\d+) /)[1];
+    const originalEvent = await page.locator('.track-bars button.active').getAttribute('data-event');
     await page.screenshot({path:resolve(screenshots,'tiny-htp-mapping.png'), fullPage:true});
+    const htpTimeline = await (await page.request.get(base + '/api/profiles/' + tinyProfile + '/htp-timeline')).json();
+    const topBlocker = htpTimeline.blockers[0];
+    for (const lane of htpTimeline.lanes) {
+      await page.locator('.hardware-tracks').getByText('Core ' + lane.core + ' · ' + lane.type + ' · TID ' + lane.tid, {exact:true}).waitFor();
+    }
+    await page.locator('.parallel-row').first().click();
+    await page.locator('.track-bars button.possible-blocker').waitFor();
+    assert.equal(await page.locator('.track-bars button.possible-blocker').getAttribute('data-event'), topBlocker.source);
+    assert.equal(await page.locator('.track-bars button.active').getAttribute('data-event'), topBlocker.target);
+    await page.locator('.hardware-arrows .blocker-arrow').waitFor({state:'attached'});
+    await page.getByText('Operation dependencies', {exact:true}).waitFor();
+    const arrows = page.getByLabel('Dependency arrows', {exact:true});
+    await arrows.uncheck();
+    assert.equal(await page.locator('.hardware-arrows').count(), 0);
+    await arrows.check();
+    await page.screenshot({path:resolve(screenshots,'htp-parallelism.png'), fullPage:true});
+    checked.push({check:'HTP hardware lanes, dependencies and cross-lane blocker highlight', profile:tinyProfile, source:topBlocker.source, target:topBlocker.target});
+    await page.goto(base + '/?' + new URLSearchParams({view:'timeline',profile:tinyProfile,node,event:originalEvent}));
+    await returnToGraph.waitFor();
     await returnToGraph.click();
     await page.locator(`.graph-node.selected[data-node="${node}"]`).waitFor();
     checked.push({check:'Tiny Transformer W8A16 HTP A/B and Attention mapping', profile:tinyProfile, experiment:comparison.id, node});
+  }
+  const codePredictor = catalog.models.find(model => model.name === 'Qwen3-TTS 12Hz 0.6B · Code Predictor');
+  if (codePredictor) {
+    const capture = catalog.profiles.find(profile => profile.model_id === codePredictor.id && profile.backend === 'CPUExecutionProvider');
+    assert.equal(capture.provenance, 'measured');
+    await page.goto(base + '/?' + new URLSearchParams({view:'graph',model:codePredictor.id,profile:capture.id}));
+    await page.locator('.tree-layer').getByText('Layer 4', {exact:true}).waitFor();
+    await page.getByRole('button', {name:'Profile this model'}).click();
+    await page.getByRole('heading', {name:'Performance capture'}).waitFor();
+    await page.getByText(/CPUExecutionProvider.+measured/).first().waitFor();
+    checked.push({check:'Real Qwen3-TTS Code Predictor graph and ORT profile', model:codePredictor.id, profile:capture.id});
   }
   if (process.env.HTP_INSIGHT_BROWSER_ACCEPTANCE === '1') {
     // Run against a separate data directory prepared by examples.demo --tiny-only.

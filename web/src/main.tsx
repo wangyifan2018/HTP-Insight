@@ -2,14 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Activity, ArrowDownToLine, ArrowRight, Box, ChevronDown, CircuitBoard, ClipboardList, Clock3, Cpu, FileJson, GitFork, House, Layers3, ScanLine, Search, Workflow } from 'lucide-react';
-import type { Catalog, Evidence, EvidenceArtifact, Experiment, ExperimentPlan, Explanation, Graph, GuidedExample, Hotspot, Node, Profile, ProfileInfo, Tensor, TimeUnit, WorkspaceStatus } from './types';
+import type { Catalog, Evidence, EvidenceArtifact, Experiment, ExperimentPlan, Explanation, Graph, GuidedExample, HardwareTimeline, Hotspot, Node, Profile, ProfileInfo, Tensor, TimeUnit, WorkspaceStatus } from './types';
 import { Capabilities, WorkspaceHome, deviceName } from './workflow';
+import { DependencyArrows, OperationDependencies, Parallelism, laneName } from './hardware-timeline';
 import type { Step } from './workflow';
 import './style.css';
 
 const views = { home: 'Workspace', graph: 'Graph Explorer', timeline: 'Profile Timeline', locate: 'Locate Hotspots', diagnosis: 'Diagnosis & Comparison', optimize: 'Notebook Adaptation', capabilities: 'System Status' } as const;
 type View = keyof typeof views;
-type Query = {view: View; model?: string; profile?: string; experiment?: string; node?: string; event?: string; hotspot?: string; level?: string; guide?: string};
+type Query = {view: View; model?: string; profile?: string; experiment?: string; node?: string; event?: string; hotspot?: string; level?: string; guide?: string; blocker?: string};
 
 function readQuery(): Query {
   const args = Object.fromEntries(new URLSearchParams(location.search));
@@ -213,6 +214,10 @@ function EvidenceFiles({items}: {items?: EvidenceArtifact[]}) {
 
 function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q: Partial<Query>) => void}) {
   const [runId, setRun] = useState<string>();
+  const [showArrows, setShowArrows] = useState(true);
+  const lanePlot = useRef<HTMLDivElement>(null);
+  const request = useData<HardwareTimeline>(profile.conditions.adapter === 'qnn-optrace-chrome-v2.50' ? '/profiles/' + profile.id + '/htp-timeline' : undefined);
+  const hardware = request?.value;
   const timed = profile.events.filter((event): event is Evidence & {start:number; duration:number} =>
     event.start !== null && event.duration !== null);
   const runs = timed.filter(event => event.kind === 'inference');
@@ -238,12 +243,20 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
   const max = run ? run.start + run.duration : Math.max(min + 1, ...shown.map(row => row.start + row.duration));
   const range = Math.max(1, max - min);
   const raw = useData<{raw: unknown; related_evidence: EvidenceArtifact[]}>(reference ? '/profiles/' + profile.id + '/events/' + reference.id : undefined);
-  const tracks = new Map<string, typeof timed>();
+  const tracks = new Map<string, typeof timed>(hardware?.lanes.map(lane => [lane.id, []]));
+  const laneById = new Map(hardware?.lanes.map(lane => [lane.id, lane]));
+  const blocker = hardware?.blockers.find(row => row.source === query.blocker && row.target === reference?.id);
+  const hardwareEvent = reference ? hardware?.events[reference.id] : undefined;
+  const hardwareLane = laneById.get(hardwareEvent?.lane_id ?? '');
   for (const row of shown) {
-    const track = row.track || row.resource || 'Unspecified';
+    const track = hardware ? hardware.events[row.id]?.lane_id ?? 'unassigned' : row.track || row.resource || 'Unspecified';
     const eventsOnTrack = tracks.get(track) ?? [];
     eventsOnTrack.push(row);
     tracks.set(track, eventsOnTrack);
+  }
+  function selectEvent(id: string, source?: string) {
+    const peer = shown.find(row => row.id === id);
+    go({event:id, node:[...(mappings.get(peer?.operation ?? '') ?? [])][0], blocker:source});
   }
   return <>
     <div className="stats">
@@ -251,7 +264,8 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
         <Stat title={profile.source === 'Optrace' ? 'HTP operations' : 'Foreground operations'}
           value={shown.filter(row => row.kind === 'node').length}
           note={profile.source === 'Optrace' ? 'Unique measured events' : 'Viewer-averaged linting'}/>
-        <Stat title="Reported resources" value={[...new Set(shown.flatMap(row => row.resource?.split(', ') ?? []))].join(' · ') || 'Unavailable'}/>
+        <Stat title={hardware ? 'Recorded hardware lanes' : 'Reported resources'} value={hardware ? hardware.lanes.length :
+          [...new Set(shown.flatMap(row => row.resource?.split(', ') ?? []))].join(' · ') || 'Unavailable'}/>
       </> : <>
         <Stat title="Latency p50" value={us(profile.latency_us?.p50)} note="Uninstrumented"/>
         <Stat title="Latency p95" value={us(profile.latency_us?.p95)} note="Uninstrumented"/>
@@ -261,20 +275,30 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
     </div>
     <div className="timeline-layout">
       <Panel title="Operation timeline" icon={<Activity size={16}/>} actions={<div className="inline">
+        {hardware && <label className="dependency-control"><input type="checkbox" checked={showArrows} onChange={e => setShowArrows(e.target.checked)}/> Dependency arrows</label>}
         {!!runs.length && <select aria-label="Trace run" value={run?.id} onChange={e => {setRun(e.target.value); go({event:undefined, node:undefined});}}>
           {runs.map((row, i) => <option key={row.id} value={row.id}>Run {i+1}</option>)}
         </select>}<a className="action" href={profile.raw_trace}><ArrowDownToLine size={14}/> Raw trace</a></div>}>
         <div className="timeline-body">
+          {request?.error && <p className="error" role="alert">{request.error}</p>}
+          {blocker && <p className="blocker-focus"><b>Possible blocker</b> · {hardware?.events[blocker.source].name} → {hardwareEvent?.name} · {measure(blocker.overlap_cycles, 'cycles')} overlap</p>}
           <div className="axis">{[0,.25,.5,.75,1].map(n => <span key={n}>{measure(n * range, profile.unit)}</span>)}</div>
+          <div ref={lanePlot} className={hardware ? 'hardware-tracks' : undefined}>
           {[...tracks.entries()].map(([track, rows]) => <div className="track" key={track}>
-            <div>{profile.source === 'ORT' ? 'CPU · ' : ''}{track}</div>
+            <div>{profile.source === 'ORT' ? 'CPU · ' : ''}{hardware ? laneById.has(track) ? laneName(laneById.get(track)!) : 'Instance unavailable' : track}</div>
             <div className="track-bars">{rows.map(row => <button key={row.id} aria-label={row.name} data-event={row.id} title={row.name + ' · ' + measure(row.duration, row.unit)}
-              className={row.id === reference?.id ? 'active' : ''} style={{left: Math.max(0, (row.start-min)/range*100) + '%', width: row.duration/range*100 + '%'}}
-              onClick={() => go({event:row.id, node:[...(mappings.get(row.operation ?? '') ?? [])][0]})}/>)}</div>
+              className={[row.id === reference?.id ? 'active' : '', row.id === blocker?.source ? 'possible-blocker' : '', hardware?.events[row.id]?.wait_kind ? 'recorded-wait' : ''].join(' ')}
+              style={{left: Math.max(0, (row.start-min)/range*100) + '%', width: row.duration/range*100 + '%'}}
+              onClick={() => selectEvent(row.id)}/>)}
+              {blocker && hardwareEvent?.lane_id === track && <span className="lane-idle" style={{left:(blocker.idle_from-min)/range*100 + '%',width:(blocker.idle_to-blocker.idle_from)/range*100 + '%'}} aria-hidden="true"/>}
+            </div>
           </div>)}
+          {hardware && showArrows && <DependencyArrows timeline={hardware} selected={reference?.id} blocker={blocker} tracks={[...tracks.keys()]} min={min} range={range}/>}
+          </div>
+          {hardware && <p className="quiet timeline-legend"><span>Solid: data dependency</span><span>Dashed: sequencer order</span><span>Striped: recorded wait</span><span>Outlined: selected possible blocker</span></p>}
           <div className="event-list"><table><thead><tr><th>Operation order</th><th>Offset</th><th>Duration</th></tr></thead>
             <tbody>{shown.map(row => <tr key={row.id} className={row.id === reference?.id ? 'current' : ''}>
-              <td><button aria-pressed={row.id === reference?.id} onClick={() => go({event:row.id, node:[...(mappings.get(row.operation ?? '') ?? [])][0]})}>{short(row.name.replace(/_kernel_time$/, ''))}</button></td>
+              <td><button aria-pressed={row.id === reference?.id} onClick={() => selectEvent(row.id)}>{short(row.name.replace(/_kernel_time$/, ''))}</button></td>
               <td>{measure(row.start-min, row.unit)}</td><td>{measure(row.duration, row.unit)}</td>
             </tr>)}</tbody></table></div>
         </div>
@@ -283,6 +307,15 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
         {reference && <div className="detail"><p className="tag">{profile.source} · {profile.provenance}</p>
           <h2>{short(reference.name).replace(/_kernel_time$/, '')}</h2>
           <dl><dt>Duration</dt><dd>{measure(reference.duration, reference.unit)}</dd>{reference.resource && <><dt>Resources</dt><dd>{reference.resource}</dd></>}<dt>Raw index</dt><dd>{reference.raw_index}</dd><dt>Mapped nodes</dt><dd>{ids.join(', ') || 'Unknown'}</dd></dl>
+          {hardwareEvent && <dl className="mapping-fields">
+            <dt>Hardware lane</dt><dd>{hardwareLane ? laneName(hardwareLane) : 'Instance unavailable'}</dd>
+            <dt>Placement evidence</dt><dd>{hardwareEvent.assignment.replaceAll('_', ' ')}</dd>
+            <dt>HTP operation ID</dt><dd className="break">{hardwareEvent.operation_id}</dd>
+            <dt>HTP flags</dt><dd>{hardwareEvent.flags.join(', ') || 'None reported'}</dd>
+            <dt>Recorded wait</dt><dd>{hardwareEvent.wait_kind?.replaceAll('_', ' ') ?? 'None reported'}</dd>
+            <dt title="The viewer reports a priority-based dominance metric.">Viewer dominant cycles</dt><dd>{measure(hardwareEvent.dominant_path_cycles, 'cycles')}</dd>
+          </dl>}
+          {hardware && hardwareEvent && <OperationDependencies timeline={hardware} eventId={hardwareEvent.event_id} select={selectEvent}/>}
           {proof && <details open><summary>Compiler mapping evidence</summary><p>{proof.method}</p>
             <dl className="mapping-fields"><dt>QNN operation</dt><dd className="break">{proof.qnn_op_name}</dd>
               <dt>Source ONNX</dt><dd className="break">{proof.source_onnx_names.join(', ')}</dd>
@@ -293,6 +326,15 @@ function Timeline({profile, query, go}: {profile: Profile; query: Query; go: (q:
         </div>}
       </Panel>
     </div>
+    {hardware && <div className="profile-attachments"><Panel title="Parallelism analysis" icon={<GitFork size={15}/>}>
+      <Parallelism timeline={hardware} selected={blocker} choose={row => {
+        selectEvent(row.target, row.source);
+        lanePlot.current?.scrollIntoView({block:'center'});
+      }} select={event => {
+        selectEvent(event);
+        lanePlot.current?.scrollIntoView({block:'center'});
+      }}/>
+    </Panel></div>}
     {!!profile.evidence?.length && <div className="profile-attachments"><Panel title="QAIRT artifacts" icon={<FileJson size={15}/>}>
       <div className="detail"><EvidenceFiles items={profile.evidence}/></div>
     </Panel></div>}
