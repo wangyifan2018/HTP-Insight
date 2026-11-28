@@ -46,15 +46,15 @@ def qhas(document):
             "total_dram_read", "total_dram_write", "peak_vtcm_alloc", "mac_estimate_whole_graph",
         )})
         if row.get("htp_resources") is not None:
-            resources.extend({key: item.get(key) for key in (
+            resources.extend({"core": row.get("htp"), **{key: item.get(key) for key in (
                 "type", "tid", "timeline_cycles", "cycles_used", "utilization", "dram_read", "dram_write",
-            )} for item in rows(row["htp_resources"]))
+            )}} for item in rows(row["htp_resources"]))
     operations = {}
     for row in operation_rows:
         identifier = native_id(row.get("op_id"))
         if identifier is not None:
             operations.setdefault(identifier, []).append({key: row.get(key) for key in (
-                "op_id", "htp_op", "qnn_op", "qnn_op_type", "dtype", "dims", "start_cycle", "cycles",
+                "op_id", "htp", "tid", "htp_op", "qnn_op", "qnn_op_type", "dtype", "dims", "start_cycle", "cycles",
                 "num_dominant_path_cycles", "dram_read", "dram_write", "vtcm_read", "vtcm_write",
             )})
     summary = {"model_id": document.get("model_id"), "cores": cores, "resources": resources,

@@ -211,9 +211,15 @@ function EvidenceFiles({items}: {items?: EvidenceArtifact[]}) {
     <a className="action" href={item.raw} title={item.filename}><ArrowDownToLine size={13}/>{item.artifact_type === 'HTP_GRAPH' ? 'HTP Graph JSON' : 'QHAS JSON'}</a>
     <span>{item.provenance}{item.summary.node_count != null && ` · ${item.summary.node_count} nodes · ${item.summary.tensor_count ?? '—'} tensors`}
       {item.summary.operation_count != null && ` · ${item.summary.operation_count} records`}</span>
-    {item.summary.resources?.map((resource, index) => <span key={index}>
-      {resource.type ?? 'Resource'} · {resource.utilization == null ? 'Utilization unavailable' : resource.utilization.toFixed(1) + '% utilization'}
-    </span>)}
+    {item.summary.resources?.map((resource, index) => {
+      // Older summaries store the enclosing core separately and already preserve TID.
+      const core = resource.core ?? (item.summary.cores?.length === 1 ? item.summary.cores[0].htp : null);
+      const scope = [resource.type ? resource.type + ' lane' : 'Unclassified track',
+        core == null ? null : `Core ${core}`, resource.tid == null ? null : `TID ${resource.tid}`];
+      return <span key={index}>{scope.filter(Boolean).join(' · ')} · {
+        resource.utilization == null ? 'Utilization unavailable' : resource.utilization.toFixed(1) + '% utilization'
+      }</span>;
+    })}
     {item.operation_records && <details><summary>Matched HTP operation</summary><pre>{JSON.stringify(item.operation_records, null, 2)}</pre></details>}
   </div>)}</div>;
 }

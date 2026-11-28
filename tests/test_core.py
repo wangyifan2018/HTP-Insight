@@ -355,6 +355,11 @@ def test_device_artifact_joins_normalized_htp_operation_id(local):
     related = core.profile_event(pid, event["id"])["related_evidence"]
     assert {item["artifact_type"] for item in related} == {"QHAS", "HTP_GRAPH"}
     assert all(item["operation_records"] for item in related)
+    qhas = next(item for item in related if item["artifact_type"] == "QHAS")
+    assert [(row["core"], row["type"], row["tid"]) for row in qhas["summary"]["resources"]] == [
+        (0, "HMX", 256), (0, "HVX", 512), (0, "HVX", 513),
+    ]
+    assert {row["tid"] for row in qhas["operation_records"]} == {256}
     assert core.profile_evidence(pid, "0xFFFF")["artifacts"] == []
     with pytest.raises(ValueError, match="Expected QAIRT"):
         core.import_evidence(pid, "qhas-v1.0.json", "htp-graph-v1.0")

@@ -11,7 +11,8 @@ export interface EvidenceArtifact {
   id: string; artifact_type: "HTP_GRAPH" | "QHAS"; filename: string; provenance: string; raw: string;
   summary: {
     node_count?: number; tensor_count?: number; operation_count?: number;
-    resources?: {type: string | null; utilization: number | null; cycles_used: number | null}[];
+    cores?: {htp: number | null}[];
+    resources?: {type: string | null; core?: number | null; tid?: number | null; utilization: number | null; cycles_used: number | null}[];
   };
   operation_records?: Record<string, unknown>[];
 }

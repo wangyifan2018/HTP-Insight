@@ -278,6 +278,8 @@ try {
     await page.getByText('Optrace and QHAS agree', {exact:true}).waitFor();
     await page.getByText('Flagged resource use', {exact:true}).waitFor();
     await page.getByText('uses_hmx', {exact:true}).waitFor();
+    await page.getByText(/HVX lane · Core 0 · TID 512 · .*% utilization/).first().waitFor();
+    await page.getByText(/HVX lane · Core 0 · TID 513 · .*% utilization/).first().waitFor();
     const dma = Object.values(timeline.events).find(row => row.lane_id === hmx.id && row.flags.includes('dma_wait') && !row.flags.includes('uses_hmx'));
     assert.ok(dma);
     await page.goto(base + '/?' + new URLSearchParams({view:'timeline',profile:resourceProfile,event:dma.event_id}));
